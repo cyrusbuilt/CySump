@@ -1,0 +1,15 @@
+sitemap cysump label="CySump" {
+    Frame label="Status and Control" {
+        Text item=CySumpSystemID
+        Text item=CySumpVersion
+        Text item=CySumpSysState label="System State: Booting" visibility=[CySumpSysState==0]
+        Text item=CySumpSysState label="System State: Normal" visibility=[CySumpSysState==1]
+        Text item=CySumpSysState label="System State: Updating" visibility=[CySumpSysState==2]
+        Text item=CySumpSysState label="System State: Disabled" visibility=[CySumpSysState==3]
+        Text item=CySumpSysState label="System State: Offline" visibility=[CySumpSysState==NULL,CySumpSysState==UNDEF]
+        Text item=CySumpWaterLevel
+        Switch item=CySumpPump mappings=[ON="Start",OFF="Stop"]
+        Text item=CySumpPitState
+        Selection item=CySumpAction label="Actions" mappings=[0="Disable",1="Enable",4="Reboot",5="Request Status"]
+    }
+}

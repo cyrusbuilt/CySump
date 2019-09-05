@@ -1,0 +1,16 @@
+# PlatformIO stuff
+.pio
+
+# VSCode stuff
+.vscode
+
+# Disassembly output
+disassembly.txt
+
+# SSL/TLS certs
+certs/
+*.der
+*.fp
+*.pem
+*.fpn
+*.crt

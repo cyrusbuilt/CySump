@@ -1,0 +1,9 @@
+Thing mqtt:topic:mosquitto:cysump "MQTT Thing CySump" (mqtt:broker:mosquitto) @ "CySump" {
+    Channels:
+        Type switch : Pump [stateTopic="cysump/status", transformationPattern="JSONPATH:$.pumpState"]
+        Type string : SysState [stateTopic="cysump/status", transformationPattern="JSONPATH:$.systemState"]
+        Type string : Version [stateTopic="cysump/status", transformationPattern="JSONPATH:$.firmwareVersion"]
+        Type string : SysID [stateTopic="cysump/status", transformationPattern="JSONPATH:$.client_id"]
+        Type string : PitState [stateTopic="cysump/status", transformationPattern="JSONPATH:$.pitState"]
+        Type number : WaterLevel [stateTopic="cysump/status", transformationPattern="JSONPATH:$.waterLevelPercent"]
+}

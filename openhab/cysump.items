@@ -1,0 +1,7 @@
+String CySumpSystemID "System ID: [%s]" <keyring> { channel="mqtt:topic:mosquitto:cysump:SysID" }
+String CySumpVersion "Firmware version: [%s]" { channel="mqtt:topic:mosquitto:cysump:Version" }
+String CySumpSysState <status> { channel="mqtt:topic:mosquitto:cysump:SysState" }
+String CySumpPitState "Pit State: [%s]" <cistern> { channel="mqtt:topic:mosquitto:cysump:PitState" }
+Number CySumpWaterLevel "Water Level [%d %%]" <water> { channel="mqtt:topic:mosquitto:cysump:WaterLevel" }
+Switch CySumpPump "Sump Pump" <pump> { channel="mqtt:topic:mosquitto:cysump:Pump" }
+String CySumpAction "Actions" <switch>

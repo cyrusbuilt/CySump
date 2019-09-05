@@ -1,0 +1,59 @@
+val String fileName = "cysump.rules"
+val String controlChannel = "cysump/control"
+val actionsBroker = getActions("mqtt", "mqtt:broker:mosquitto")
+
+rule "CySumpRecCmdOn"
+when
+    Item CySumpPump received command
+then
+    logInfo(fileName, "Sump pump received command: " + receivedCommand)
+    var String ctrlMsg = "{\"client_id\":\"cygarage\",\"command\":"
+    if (receivedCommand === ON) {
+        ctrlMsg += "2"
+    }
+    else {
+        ctrlMsg += "3"
+    }
+
+    ctrlMsg += "}"
+    logInfo(fileName, "Publishing MQTT payload " + ctrlMsg + " to channel: " + controlChannel)
+    actionsBroker.publishMQTT(controlChannel, ctrlMsg)
+    CySumpPump.postUpdate(NULL)
+end
+
+rule "CySumpActions"
+when
+    Item CySumpAction received command
+then
+    val String cmd = CySumpAction.state.toString()
+    logInfo(fileName, "Got action: " + cmd)
+
+    val String cmdString = "{\"client_id\":\"cygarage\",\"command\":" + cmd + "}"
+
+    logInfo(fileName, "Publishing MQTT payload " + cmdString + " to channel: " + controlChannel)
+    actionsBroker.publishMQTT(controlChannel, cmdString)
+    CySumpAction.postUpdate(NULL)
+end
+
+rule "WaterLevelAlarm"
+when
+    Item CySumpPitState changed
+then
+    var String msg = ""
+    if (CySumpPitState.state == "CRITICAL") {
+        // The water level is high. Someone should check on things.
+        // If the water level doesn't start dropping, we're gonna have a flood.
+        msg = "WARNING! Sump pit water level CRITICAL!"
+    }
+    else if (CySumpPitState.state == "FLOOD") {
+        // That's it folks. We are officially flooding.
+        // Probably going to have to replace the sensor, but that is probably
+        // the least of your worries at this point.
+        msg = "IMMEDIATE ATTENTION! Sump pit FLOODING!!"
+    }
+
+    if (msg.length() > 0) {
+        logWarn(fileName, msg);
+        sendBroadcastNotification(msg)
+    }
+end

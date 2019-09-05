@@ -1,0 +1,21 @@
+{
+    "hostname": "CYSUMP",
+    "useDHCP": false,
+    "ip": "192.168.0.202",
+    "gateway": "192.168.0.1",
+    "subnetMask": "255.255.255.0",
+    "dnsServer": "192.168.0.1",
+    "wifiSSID": "your_ssid_here",
+    "wifiPassword": "your_password_here",
+    "webserverPort": 80,
+    "otaPort": 8266,
+    "otaPassword": "your_ota_password_here",
+    "mqttBroker": "your_mqtt_broker_here",
+    "mqttPort": 8883,
+    "mqttControlChannel": "cysump/control",
+    "mqttStatusChannel": "csump/status",
+    "mqttUsername": "your_mqtt_username",
+    "mqttPassword": "your_mqtt_password",
+    "serverFingerprintPath": "/mqtt.fpn",
+    "caCertificatePath": "/ca.crt"
+}
