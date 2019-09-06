@@ -1,6 +1,6 @@
 /**
  * CySump
- * v1.0
+ * v1.1
  * 
  * Author:
  *  Cyrus Brunner <cyrusbuilt at gmail dot com>
@@ -26,7 +26,7 @@
 #include "ESP8266Ping.h"
 #include "config.h"
 
-#define FIRMWARE_VERSION "1.0"
+#define FIRMWARE_VERSION "1.1"
 
 // Workaround to allow an MQTT packet size greater than the default of 128.
 #ifdef MQTT_MAX_PACKET_SIZE
@@ -929,6 +929,7 @@ void promptConfig() {
     Serial.println(F("= e: Resume normal operation ="));
     Serial.println(F("= g: Get network info        ="));
     Serial.println(F("= a: Activate pump           ="));
+    Serial.println(F("= x: Get pit depth           ="));
     Serial.println(F("= o: Run diagnostics         ="));
     Serial.println(F("= f: Save config changes     ="));
     Serial.println(F("= z: Restore default config  ="));
@@ -1250,6 +1251,15 @@ void runDiagnostics() {
 }
 
 /**
+ * Simply report the pit depth in inches.
+ */
+void reportDepth() {
+    Serial.print(F("INFO: Pit depth = "));
+    Serial.print(depthSensor.measureDistanceIn());
+    Serial.println(F(" inches."));
+}
+
+/**
  * Checks commands entered by the user via serial input and carries out
  * the specified action if valid.
  */
@@ -1342,6 +1352,12 @@ void checkCommand() {
                     break;
                 }
             }
+            promptConfig();
+            checkCommand();
+            break;
+        case 'x':
+            reportDepth();
+            delay(2000);
             promptConfig();
             checkCommand();
             break;
