@@ -1,6 +1,6 @@
 /**
  * CySump
- * v1.1
+ * v1.2
  * 
  * Author:
  *  Cyrus Brunner <cyrusbuilt at gmail dot com>
@@ -60,7 +60,7 @@ void onDepthChange(HCSR04Info* sender);
 #endif
 WiFiClientSecure wifiClient;
 PubSubClient mqttClient(wifiClient);
-HCSR04 depthSensor(PIN_TRIGGER, PIN_ECHO, onDepthChange);
+HCSR04 depthSensor(PIN_TRIGGER, PIN_ECHO, onDepthChange);  // Should be compatible with JSN-SR04T as well.
 Relay pumpRelay(PIN_RELAY, onRelayStateChange, "GARAGE_DOOR");
 LED alarmLED(PIN_ALARM_LED, NULL);
 LED wifiLED(PIN_WIFI_LED, NULL);
@@ -84,6 +84,7 @@ String mqttUsername = "";
 String mqttPassword = "";
 int mqttPort = MQTT_PORT;
 volatile int percentFull = 0;
+volatile double pitDepth = PIT_DEPTH_INCHES;
 bool isDHCP = false;
 bool filesystemMounted = false;
 bool connSecured = false;
@@ -268,7 +269,7 @@ void onDepthChange(HCSR04Info* sender) {
     // flooding. So the depth reading is the actual pit depth. We need
     // water depth, so we subtract the current reading from the known
     // pit depth (+/- a potential offset for sensor position).
-    depth = PIT_DEPTH_INCHES - depth;
+    depth = pitDepth - depth;
     if (depth < 0) {
         depth = 0;
     }
@@ -277,7 +278,7 @@ void onDepthChange(HCSR04Info* sender) {
         percentFull = 100;
     }
     else {
-        percentFull = round((depth * 100) / PIT_DEPTH_INCHES);
+        percentFull = round((depth * 100) / pitDepth);
     }
 
     Serial.print(F("INFO: Water level change event. Depth: "));
@@ -444,6 +445,7 @@ void saveConfiguration() {
     doc["mqttPassword"] = mqttPassword;
     doc["serverFingerPrintPath"] = serverFingerprintPath;
     doc["caCertificatePath"] = caCertificatePath;
+    doc["pitDepth"] = pitDepth;
     #ifdef ENABLE_OTA
         doc["otaPort"] = otaPort;
         doc["otaPassword"] = otaPassword;
@@ -547,6 +549,7 @@ void loadConfiguration() {
     mqttPassword = doc["mqttPassword"].as<String>();
     serverFingerprintPath = doc["serverFingerprintPath"].as<String>();
     caCertificatePath = doc["caCertificatePath"].as<String>();
+    pitDepth = doc["pitDepth"].as<double>();
     #ifdef ENABLE_OTA
         otaPort = doc["otaPort"].as<int>();
         otaPassword = doc["otaPassword"].as<String>();
@@ -930,6 +933,7 @@ void promptConfig() {
     Serial.println(F("= g: Get network info        ="));
     Serial.println(F("= a: Activate pump           ="));
     Serial.println(F("= x: Get pit depth           ="));
+    Serial.println(F("= l: Configure pit depth     ="));
     Serial.println(F("= o: Run diagnostics         ="));
     Serial.println(F("= f: Save config changes     ="));
     Serial.println(F("= z: Restore default config  ="));
@@ -1254,9 +1258,37 @@ void runDiagnostics() {
  * Simply report the pit depth in inches.
  */
 void reportDepth() {
+    // Initialze results to 0.
+    double results[5];
+    for (int thisReading = 0; thisReading < sizeof(results); thisReading++) {
+        results[thisReading] = 0;
+    }
+
+    // It takes ~100ms to get measure distance, but we need to do some
+    // smoothing here, so we'll get 5 samples and average them, which
+    // should take ~500ms to complete.
+    double total = 0.0;
+    for (int thisReading = 0; thisReading < sizeof(results); thisReading++) {
+        total -= results[thisReading];
+        results[thisReading] = depthSensor.measureDistanceIn();
+        total += results[thisReading];
+        delay(10);
+    }
+
+    double average = total / 5;
     Serial.print(F("INFO: Pit depth = "));
-    Serial.print(depthSensor.measureDistanceIn());
+    Serial.print(average);
     Serial.println(F(" inches."));
+}
+
+/**
+ * Gets the and stores the pit depth from user input.
+ */
+void configurePitDepth() {
+    Serial.println(F("Enter new pit depth (in inches):"));
+    waitForUserInput();
+    String value = getInputString();
+    pitDepth = value.toDouble();
 }
 
 /**
@@ -1341,6 +1373,7 @@ void checkCommand() {
             checkCommand();
             break;
         case 'a':
+            // Manually activate pump.
             togglePump(true);
             delay(500);
             Serial.println(F("--- Press ENTER to stop pump ---"));
@@ -1356,8 +1389,15 @@ void checkCommand() {
             checkCommand();
             break;
         case 'x':
+            // Get and report pit depth.
             reportDepth();
             delay(2000);
+            promptConfig();
+            checkCommand();
+            break;
+        case 'l':
+            // Let user configure pit depth.
+            configurePitDepth();
             promptConfig();
             checkCommand();
             break;

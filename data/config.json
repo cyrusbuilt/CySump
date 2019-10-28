@@ -17,5 +17,6 @@
     "mqttUsername": "your_mqtt_username",
     "mqttPassword": "your_mqtt_password",
     "serverFingerprintPath": "/mqtt.fpn",
-    "caCertificatePath": "/ca.crt"
+    "caCertificatePath": "/ca.crt",
+    "pitDepth": 30.0
 }
