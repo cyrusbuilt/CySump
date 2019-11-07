@@ -1,0 +1,48 @@
+*Pick And Place List
+*Company=
+*Author=
+*eMail=
+*
+*Project=CySump
+*Date=15:44:08
+*CreatedBy=Fritzing 0.9.3b.04.19.5c895d327c44a3114e5fcc9d8260daf0cbb52806
+*
+*
+*Coordinates in mm, always center of component
+*Origin 0/0=Lower left corner of PCB
+*Rotation in degree (0-360, math. pos.)
+*
+*No;Value;Package;X;Y;Rotation;Side;Name
+1;;;107.52;-79.6235;0;Bottom;TXT12
+2;;;3.66888;-4.57158;0;Bottom;Hole4
+3;;;3.66888;-88.3915;0;Bottom;Hole3
+4;;;16.7639;-47.9178;0;Bottom;Via1
+5;;;77.1143;-8.29381;0;Bottom;Via3
+6;;;69.7089;-66.8015;0;Bottom;J1
+7;;;95.2746;-69.2939;0;Bottom;TXT15
+8;;;25.9644;-77.0462;0;Bottom;TXT3
+9;;;64.3127;-30.849;0;Bottom;Via2
+10;;;61.2647;-44.8698;0;Bottom;Via5
+11;;;102.491;-82.7468;0;Bottom;TXT1
+12;;;66.0617;-67.8801;0;Bottom;TXT10
+13;;;74.9265;-63.6833;0;Bottom;TXT14
+14;;;21.4489;-31.2415;90;Bottom;Power Relay Featherwing
+15;;;59.5489;-24.9145;0;Bottom;Huzzah ESP8266
+16;;;83.8199;-60.1098;0;Bottom;Via6
+17;;5 mm [THT];31.6087;-81.4625;0;Bottom;LED2
+18;;;107.595;-68.7431;0;Bottom;IMG1
+19;;;8.46666;-77.2755;0;Bottom;TXT2
+20;;;75.7939;-88.0649;0;Bottom;TXT7
+21;;;46.0247;-46.6986;0;Bottom;Via4
+22;;;66.0617;-88.185;0;Bottom;TXT6
+23;;THT;70.8519;-88.8995;-90;Bottom;J2
+24;;;65.9418;-64.9966;0;Bottom;TXT11
+25;;5 mm [THT];16.3689;-81.4625;0;Bottom;LED1
+26;;;117.969;-88.3915;0;Bottom;Hole1
+27;;switche-dpdt;88.7388;-69.5315;-90;Bottom;S1
+28;;;107.116;-77.4605;0;Bottom;TXT13
+29;;;84.4605;-90.3248;0;Bottom;TXT8
+30;;;43.3917;-77.0267;0;Bottom;TXT4
+31;;5 mm [THT];49.3887;-81.4625;0;Bottom;LED3
+32;;;98.0367;-28.6804;90;Bottom;HC-SR04 Sensor (Replace with JSN-SR04T)
+33;;;117.969;-4.57158;0;Bottom;Hole2
