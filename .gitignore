@@ -14,3 +14,9 @@ certs/
 *.pem
 *.fpn
 *.crt
+
+# macOS stuff
+.DS_Store
+
+# Gerber package
+gerber.zip
