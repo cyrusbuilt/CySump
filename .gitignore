@@ -20,3 +20,6 @@ certs/
 
 # Gerber package
 gerber.zip
+
+# macOS crap
+.DS_Store
