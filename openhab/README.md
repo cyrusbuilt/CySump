@@ -14,6 +14,8 @@ To install mosquitto, follow the download and install instructions [here](https:
 > sudo apt install mosquitto mosquitto-clients
 ```
 
+## The following instructions are only necessary when TLS is enabled
+
 Next we need to generate the necessary SSL certificates that will be used for communication over TLS.  There is a shell script in the tools directory that simplifies this process. Just run:
 
 ```bash
@@ -29,6 +31,8 @@ You will first be prompted for the hostname and IP address of your MQTT broker (
 > sudo cp -f tools/certs/ca.crt.pem /etc/mosquitto/certs
 ```
 
+## END TLS-SPECIFIC CONFIG
+
 Next, we need to configure it.
 
 ```bash
@@ -41,7 +45,7 @@ First make sure the following line is present:
 listener 1883 localhost
 ```
 
-This binds port 1883 (the default non-SSL port) for MQTT to only allow traffic from the local host.  This is done because encrypting the traffic between OH2 and MQTT when they are running on the same host is overkill, but we also need to make sure that *ONLY* the localhost can do this.  All other traffic will then have to go through another port. In our case, 'all other traffic' will be encrypted traffic. This means we need to define another port and supply the certificates like so:
+This binds port 1883 (the default non-SSL port) for MQTT to only allow traffic from the local host.  This is done because encrypting the traffic between OH2 and MQTT when they are running on the same host is overkill, but we also need to make sure that *ONLY* the localhost can do this.  All other traffic will then have to go through another port. In our case, 'all other traffic' will be encrypted traffic when TLS is enabled. This means we need to define another port and supply the certificates like so:
 
 ```txt
 listener 1883 localhost
@@ -52,7 +56,7 @@ certfile /etc/mosquitto/certs/host_name.crt.pem
 keyfile /etc/mosquitto/certs/host_name.key.pem
 ```
 
-Press CTRL+X to save and close the file.  Now restart MQTT:
+If you are *NOT* using TLS, you can simply leave all the certificate lines out of the config (or comment them). Now press CTRL+X to save and close the file.  Now restart MQTT:
 
 ```bash
 > sudo systemctl restart mosquitto.service
@@ -120,6 +124,10 @@ Save and close, then restart the service:
 
 Next we need to copy the following files to the openhab-conf folder on the server:
 
+## rrd4j.persist
+
+This is a persistence configuration file. This is only needed if you are using RRD4J for the persistence engine in OpenHAB2 and don't already have a persistence file for it (althouh the settings in this file are recommended). NOTE: Peristence is required to make use of historical water depth tracking. If you don't need this feature or are using a different persistence engine, you can ignore this file. Otherwise, copy this file to the openhab-conf/persist directory.
+
 ## mqttbridge.things
 
 This is a "Thing" definition for the MQTT bridge. This bridge can be used by anything else in OH2 that needs it. This simply defines a bridge to MQTT that registers OH2 as a client. If a Thing definition for this bridge already exists, no need to copy it again. If not, then copy this file to the openhab-conf/things directory.
@@ -157,7 +165,7 @@ Now lets make sure the service started successfully:
 The service should be active. So let's test it:
 
 ```bash
-> mosquitto_pub -h localhost -p 1883 -t cysump/status -m "{\"client_id\":\"test\",\"pumpState\":\"OFF\",\"firmwareVersion\":\"1.0\",\"systemState\":0,\"waterLevelPercent\":50,\"pitState\":\"LOW\"}"
+> mosquitto_pub -h localhost -p 1883 -t cysump/status -m "{\"client_id\":\"test\",\"pumpState\":\"OFF\",\"firmwareVersion\":\"1.0\",\"systemState\":0,\"waterLevelPercent\":50,\"waterDepth\":12,\"pitState\":\"LOW\",\"alarmEnabled\":true}"
 ```
 
 Now if you navigate to BasicUI in OH2 and click the CySump sitemap, you should see the System ID is "test", Firmware version is "1.0", System State is "Booting 0" and Pump state is "OFF".
@@ -179,6 +187,10 @@ You will need the following dependent add-ons installed in OpenHAB2 for these co
 - You also need to connect your local OpenHAB server to a cloud instance in order to receive push notifications.
 
 This is because cysump.rules makes use of the sendBroadcastNotification() method which assumes you have linked your local OH2 server to a cloud OH2 instance, which can then make use of push notifications. If you do not wish to use push notifications or just don't want to link your local installation to a secure cloud instance, then don't install the cloud connector and comment out the necessary line cysump.rules.
+
+[RRD4J Peristence add-on](https://www.openhab.org/addons/persistence/rrd4j/)
+
+- Required for historical water depth graphs if no other persistence engine is being used.
 
 If all went well, you can now use CySump with your OH2 installation and control and monitor the sump pump (securely) using the OH2 web console or via the OH2 mobile app.
 

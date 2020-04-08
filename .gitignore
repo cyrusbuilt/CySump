@@ -17,9 +17,18 @@ certs/
 
 # macOS stuff
 .DS_Store
+/.DS_Store
 
 # Gerber package
 gerber.zip
 
 # macOS crap
 .DS_Store
+
+# Salesforce extension crap. No idea why the hell it
+# creates this in literally every single folder I open
+# in code.... but whatevs. Ignore it here.
+.sfdx/
+
+# Ignore all backup files.
+*.bak

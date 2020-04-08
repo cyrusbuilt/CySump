@@ -8,7 +8,7 @@ Bridge mqtt:broker:mosquitto "MQTT Broker Mosquitto" @ "MQTT" [
     retain=false,
     keep_alive_time=30000,
     reconnect_time=60000
-    //username="your_mqtt_username",
-    //password="your_mqtt_password"
+    username="your_mqtt_username",
+    password="your_mqtt_password"
     // Can also add username and password here if needed.
 ]

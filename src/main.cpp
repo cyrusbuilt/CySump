@@ -1,22 +1,26 @@
 /**
  * CySump
- * v1.2
+ * v1.4
  * 
  * Author:
  *  Cyrus Brunner <cyrusbuilt at gmail dot com>
  */
+
 #ifndef ESP8266
     #error This firmware is only compatible with ESP8266 controllers.
 #endif
 #include <Arduino.h>
 #include <ESP8266WiFi.h>
-#include <WiFiClientSecure.h>
+#ifdef ENABLE_TLS
+    #include <WiFiClientSecure.h>
+#else
+    #include <WiFiClient.h>
+#endif
 #include <FS.h>
 #include <time.h>
 #include "Buzzer.h"
 #include "LED.h"
 #include "Relay.h"
-#include "HCSR04.h"
 #include "TaskScheduler.h"
 #include "ResetManager.h"
 #include "ESPCrashMonitor-master/ESPCrashMonitor.h"
@@ -24,15 +28,13 @@
 #include "PubSubClient.h"
 #include "TelemetryHelper.h"
 #include "ESP8266Ping.h"
+#include "NewPing.h"
 #include "config.h"
+#include "Console.h"
 
-#define FIRMWARE_VERSION "1.1"
+#define FIRMWARE_VERSION "1.4"
 
-// Workaround to allow an MQTT packet size greater than the default of 128.
-#ifdef MQTT_MAX_PACKET_SIZE
-#undef MQTT_MAX_PACKET_SIZE
-#endif
-#define MQTT_MAX_PACKET_SIZE 200
+#define MAX_DISTANCE_CM 400       /** The maximum supported distance for reliable ranging (cm). */
 
 // Pin definitions
 #define PIN_WIFI_LED 2
@@ -51,16 +53,19 @@ void onCheckMqtt();
 void onCheckSensors();
 void onMqttMessage(char* topic, byte* payload, unsigned int length);
 void onSyncClock();
-void onDepthChange(HCSR04Info* sender);
 
 // Global vars
 #ifdef ENABLE_MDNS
     #include <ESP8266mDNS.h>
     MDNSResponder mdns;
 #endif
-WiFiClientSecure wifiClient;
+#ifdef ENABLE_TLS
+    WiFiClientSecure wifiClient;
+#else
+    WiFiClient wifiClient;
+#endif
 PubSubClient mqttClient(wifiClient);
-HCSR04 depthSensor(PIN_TRIGGER, PIN_ECHO, onDepthChange);  // Should be compatible with JSN-SR04T as well.
+NewPing depthSensor(PIN_TRIGGER, PIN_ECHO, MAX_DISTANCE_CM);
 Relay pumpRelay(PIN_RELAY, onRelayStateChange, "GARAGE_DOOR");
 LED alarmLED(PIN_ALARM_LED, NULL);
 LED wifiLED(PIN_WIFI_LED, NULL);
@@ -83,12 +88,17 @@ String fingerprintString;
 String mqttUsername = "";
 String mqttPassword = "";
 int mqttPort = MQTT_PORT;
+unsigned long pitDepth = PIT_DEPTH_INCHES;
 volatile int percentFull = 0;
-volatile double pitDepth = PIT_DEPTH_INCHES;
+volatile unsigned long lastDepth = 0;
 bool isDHCP = false;
 bool filesystemMounted = false;
-bool connSecured = false;
+bool manualPumpMode = false;
+#ifdef ENABLE_TLS
+    bool connSecured = false;
+#endif
 volatile SystemState sysState = SystemState::BOOTING;
+bool alarmDisabled = false;
 #ifdef ENABLE_OTA
     int otaPort = OTA_HOST_PORT;
     String otaPassword = OTA_PASSWORD;
@@ -106,28 +116,15 @@ volatile SystemState sysState = SystemState::BOOTING;
 // to keep up with the incoming water. More than likely, this would simply
 // indicate pump failure.
 
-/**
- * Gets an IPAddress value from the specified string.
- * @param value The string containing the IP.
- * @return The IP address.
- */
-IPAddress getIPFromString(String value) {
-    unsigned int ip[4];
-    unsigned char buf[value.length()];
-    value.getBytes(buf, value.length());
-    const char* ipBuf = (const char*)buf;
-    sscanf(ipBuf, "%u.%u.%u.%u", &ip[0], &ip[1], &ip[2], &ip[3]);
-    return IPAddress(ip[0], ip[1], ip[2], ip[3]);
-}
 
 /**
  * Get and print the pump status.
  * @return The pump status ("OFF" or "ON")
  */
 String pumpStatus() {
-    String state = "ON";
+    String state = "OFF";
     if (pumpRelay.isClosed()) {
-        state = "OFF";
+        state = "ON";
     }
 
     Serial.print(F("INFO: Pump status = "));
@@ -145,7 +142,7 @@ String pitState(int percentFull) {
     if (percentFull == 0) {
         state = "EMPTY";
     }
-    else if (percentFull < 50) {
+    else if (percentFull <= 50) {
         state = "LOW";
     }
     else if (percentFull > 50 && percentFull < 75) {
@@ -171,13 +168,15 @@ void publishSystemState() {
     if (mqttClient.connected()) {
         wifiLED.on();
 
-        DynamicJsonDocument doc(200);
+        DynamicJsonDocument doc(MQTT_MAX_PACKET_SIZE);
         doc["client_id"] = hostName;
         doc["pumpState"] = pumpStatus();
         doc["firmwareVersion"] = FIRMWARE_VERSION;
         doc["systemState"] = (uint8_t)sysState;
         doc["waterLevelPercent"] = percentFull;
         doc["pitState"] = pitState(percentFull);
+        doc["waterDepth"] = lastDepth;
+        doc["alarmEnabled"] = alarmDisabled ? "OFF" : "ON";
 
         String jsonStr;
         size_t len = serializeJson(doc, jsonStr);
@@ -248,72 +247,6 @@ void togglePump(bool run) {
 }
 
 /**
- * Handles the water depth change event. This checks to see how much
- * water is in the sump pit, and if there is too much water, triggers
- * an alarm audible alarm. Also publishes the system state to MQTT.
- * @param sender The sensor info.
- */
-void onDepthChange(HCSR04Info* sender) {
-    // TODO Probably need some kind of calibration routine. The distance
-    // measured is the distance from wherever the sensor is in space
-    // and the bottom of the pit. If the sensor is mounted far enough
-    // above the top of the pit, this could skew things. Likewise, if
-    // the sensor is positioned slightly inside the top of the pit, we
-    // need to account for that.
-    double depth = sender->currentDistance * CM_TO_IN_MULTIPLIER;
-
-    // To compute how *full* the pit is, we need to take the inverse of
-    // the reading. So if it's 30 in deep, then it's 0% full (no water).
-    // But if it's 0 in deep then the water is literally right under the
-    // sensor, which at that point would mean it's 100% full and likely
-    // flooding. So the depth reading is the actual pit depth. We need
-    // water depth, so we subtract the current reading from the known
-    // pit depth (+/- a potential offset for sensor position).
-    depth = pitDepth - depth;
-    if (depth < 0) {
-        depth = 0;
-    }
-
-    if (depth == 0) {
-        percentFull = 100;
-    }
-    else {
-        percentFull = round((depth * 100) / pitDepth);
-    }
-
-    Serial.print(F("INFO: Water level change event. Depth: "));
-    Serial.print(depth);
-    Serial.print(F(" inches ("));
-    Serial.print(percentFull);
-    Serial.print(F("%)"));
-
-    // TODO make these threshholds constant (and possibly configurable).
-    if (pumpRelay.isOpen() && percentFull >= 40) {
-        togglePump(true);
-    }
-    else if (pumpRelay.isClosed() && percentFull <= 5) {
-        togglePump(false);
-    }
-
-    if (sender->isAlarm) {
-       if (alarmLED.isOff()) {
-           alarmLED.on();
-           alarmBuzzer.on();
-           Serial.println(F("WARN: Water level CRITICAL!"));
-       }
-    }
-    else {
-        if (alarmLED.isOn()) {
-            alarmLED.off();
-            alarmBuzzer.off();
-            Serial.println(F("INFO: Water level within safe limit."));
-        }
-    }
-
-    publishSystemState();
-}
-
-/**
  * Resume normal operation. This will resume any suspended tasks.
  */
 void resumeNormal() {
@@ -323,48 +256,6 @@ void resumeNormal() {
     // TODO Should we do anything with the other LEDs?
     sysState = SystemState::NORMAL;
     publishSystemState();
-}
-
-/**
- * Waits for user input from the serial console.
- */
-void waitForUserInput() {
-    while (Serial.available() < 1) {
-        ESPCrashMonitor.iAmAlive();
-        delay(50);
-    }
-}
-
-/**
- * Gets string input from the serial console.
- * @param isPassword If true, echos back a '*' instead of the character
- * that was entered.
- * @return The string that was entered.
- */
-String getInputString(bool isPassword = false) {
-    char c;
-    String result = "";
-    bool gotEndMarker = false;
-    while (!gotEndMarker) {
-        ESPCrashMonitor.iAmAlive();
-        if (Serial.available() > 0) {
-            c = Serial.read();
-            if (c == '\n') {
-                gotEndMarker = true;
-                break;
-            }
-
-            if (isPassword) {
-                Serial.print('*');
-            }
-            else {
-                Serial.print(c);
-            }
-            result += c;
-        }
-    }
-
-    return result;
 }
 
 /**
@@ -443,8 +334,10 @@ void saveConfiguration() {
     doc["mqttStatusChannel"] = statusChannel;
     doc["mqttUsername"] = mqttUsername;
     doc["mqttPassword"] = mqttPassword;
-    doc["serverFingerPrintPath"] = serverFingerprintPath;
-    doc["caCertificatePath"] = caCertificatePath;
+    #ifdef ENABLE_TLS
+        doc["serverFingerPrintPath"] = serverFingerprintPath;
+        doc["caCertificatePath"] = caCertificatePath;
+    #endif
     doc["pitDepth"] = pitDepth;
     #ifdef ENABLE_OTA
         doc["otaPort"] = otaPort;
@@ -547,9 +440,11 @@ void loadConfiguration() {
     statusChannel = doc["mqttStatusChannel"].as<String>();
     mqttUsername = doc["mqttUsername"].as<String>();
     mqttPassword = doc["mqttPassword"].as<String>();
-    serverFingerprintPath = doc["serverFingerprintPath"].as<String>();
-    caCertificatePath = doc["caCertificatePath"].as<String>();
-    pitDepth = doc["pitDepth"].as<double>();
+    #ifdef ENABLE_TLS
+        serverFingerprintPath = doc["serverFingerprintPath"].as<String>();
+        caCertificatePath = doc["caCertificatePath"].as<String>();
+    #endif
+    pitDepth = doc["pitDepth"].as<int>();
     #ifdef ENABLE_OTA
         otaPort = doc["otaPort"].as<int>();
         otaPassword = doc["otaPassword"].as<String>();
@@ -559,6 +454,7 @@ void loadConfiguration() {
     Serial.println(F("DONE"));
 }
 
+#ifdef ENABLE_TLS
 /**
  * Loads the SSL certificates and server fingerprint necessary to establish
  * a connection the the MQTT broker over TLS.
@@ -590,8 +486,8 @@ bool loadCertificates() {
     ca.close();
     X509List caCertX509(caContents.c_str());
 
-    wifiClient.setTrustAnchors(&caCertX509);
     wifiClient.allowSelfSignedCerts();
+    wifiClient.setTrustAnchors(&caCertX509);
 
     if (!SPIFFS.exists(serverFingerprintPath)) {
         Serial.println(F("FAIL"));
@@ -616,7 +512,12 @@ bool loadCertificates() {
     fp.close();
     if (val.length() > 0) {
         fingerprintString = val;
-        wifiClient.setFingerprint(fingerprintString.c_str());
+        fingerprintString.trim();
+        if (!wifiClient.setFingerprint(fingerprintString.c_str())) {
+            Serial.println(F("FAIL"));
+            Serial.println(F("ERROR: Invalid fingerprint."));
+            return false;
+        }
     }
     else {
         Serial.println(F("FAIL"));
@@ -646,6 +547,7 @@ bool verifyTLS() {
     onSyncClock();
 
     Serial.print(F("INFO: Verifying connectivity over TLS... "));
+    //wifiClient.setX509Time(time(nullptr));
     bool result = wifiClient.connect(mqttBroker, mqttPort);
     if (result) {
         wifiClient.stop();
@@ -659,18 +561,25 @@ bool verifyTLS() {
     ESPCrashMonitor.enableWatchdog(ESPCrashMonitorClass::ETimeout::Timeout_2s);
     return result;
 }
+#endif
 
 /**
  * Confirms with the user that they wish to do a factory restore. If so, then
  * clears the current configuration file in SPIFFS, then reboots. Upon reboot,
  * a new config file will be generated with default values.
+ * @param fromSubmit Set true if request came from the configuration page.
+ * Default is false.
  */
-void doFactoryRestore() {
-    Serial.println();
-    Serial.println(F("Are you sure you wish to restore to factory default? (Y/n)?"));
-    waitForUserInput();
-    String str = getInputString();
-    if (str == "Y" || str == "y") {
+void doFactoryRestore(bool fromSubmit = false) {
+    String str = "N";
+    if (!fromSubmit) {
+        Serial.println();
+        Serial.println(F("Are you sure you wish to restore to factory default? (Y/n)?"));
+        Console.waitForUserInput();
+        str = Console.getInputString();
+    }
+    
+    if (str == "Y" || str == "y" || fromSubmit) {
         Serial.print(F("INFO: Clearing current config... "));
         if (filesystemMounted) {
             if (SPIFFS.remove(CONFIG_FILE_PATH)) {
@@ -716,14 +625,16 @@ bool reconnectMqttClient() {
         Serial.print(F(" on port: "));
         Serial.print(mqttPort);
         Serial.println(F("..."));
-        if (!connSecured) {
-            connSecured = verifyTLS();
+        #ifdef ENABLE_TLS
             if (!connSecured) {
-                Serial.println(F("ERROR: Unable to establish TLS connection to host."));
-                Serial.println(F("ERROR: Invalid certificate or SSL negotiation failed."));
-                return false;
+                connSecured = verifyTLS();
+                if (!connSecured) {
+                    Serial.println(F("ERROR: Unable to establish TLS connection to host."));
+                    Serial.println(F("ERROR: Invalid certificate or SSL negotiation failed."));
+                    return false;
+                }
             }
-        }
+        #endif
 
         bool didConnect = false;
         if (mqttUsername.length() > 0 && mqttPassword.length() > 0) {
@@ -795,9 +706,11 @@ void handleControlRequest(String id, ControlCommand cmd) {
 
     switch (cmd) {
         case ControlCommand::ACTIVATE:
+            manualPumpMode = true;
             togglePump(true);
             break;
         case ControlCommand::DEACTIVATE:
+            manualPumpMode = false;
             togglePump(false);
             break;
         case ControlCommand::DISABLE:
@@ -810,6 +723,15 @@ void handleControlRequest(String id, ControlCommand cmd) {
             break;
         case ControlCommand::REBOOT:
             reboot();
+            break;
+        case ControlCommand::DISABLE_ALARM:
+            Serial.println(F("WARN: Silencing alarm."));
+            alarmDisabled = true;
+            alarmBuzzer.off();
+            break;
+        case ControlCommand::ENABLE_ALARM:
+            Serial.println(F("INFO: Alarm enabled."));
+            alarmDisabled = false;
             break;
         case ControlCommand::REQUEST_STATUS:
             break;
@@ -915,36 +837,6 @@ void initMQTT() {
 }
 
 /**
- * Prompts the user with a configuration screen and waits for
- * user input.
- */
-void promptConfig() {
-    Serial.println();
-    Serial.println(F("=============================="));
-    Serial.println(F("= Command menu:              ="));
-    Serial.println(F("=                            ="));
-    Serial.println(F("= r: Reboot                  ="));
-    Serial.println(F("= c: Configure network       ="));
-    Serial.println(F("= m: Configure MQTT settings ="));
-    Serial.println(F("= s: Scan wireless networks  ="));
-    Serial.println(F("= n: Connect to new network  ="));
-    Serial.println(F("= w: Reconnect to WiFi       ="));
-    Serial.println(F("= e: Resume normal operation ="));
-    Serial.println(F("= g: Get network info        ="));
-    Serial.println(F("= a: Activate pump           ="));
-    Serial.println(F("= x: Get pit depth           ="));
-    Serial.println(F("= l: Configure pit depth     ="));
-    Serial.println(F("= o: Run diagnostics         ="));
-    Serial.println(F("= f: Save config changes     ="));
-    Serial.println(F("= z: Restore default config  ="));
-    Serial.println(F("=                            ="));
-    Serial.println(F("=============================="));
-    Serial.println();
-    Serial.println(F("Enter command choice (r/c/s/n/w/e/g): "));
-    waitForUserInput();
-}
-
-/**
  * Attempt to connect to the configured WiFi network. This will break any existing connection first.
  */
 void connectWifi() {
@@ -983,124 +875,6 @@ void connectWifi() {
     else {
         printNetworkInfo();
     }
-}
-
-/**
- * Prompts the user for (and the applies) new MQTT configuration settings.
- */
-void configureMQTT() {
-    mqttClient.unsubscribe(controlChannel.c_str());
-    mqttClient.disconnect();
-
-    Serial.print(F("Current MQTT broker = "));
-    Serial.println(mqttBroker);
-    Serial.println(F("Enter MQTT broker address:"));
-    waitForUserInput();
-    mqttBroker = getInputString();
-    Serial.println();
-    Serial.print(F("New broker = "));
-    Serial.println(mqttBroker);
-
-    Serial.print(F("Current port = "));
-    Serial.println(mqttPort);
-    Serial.println(F("Enter MQTT broker port:"));
-    waitForUserInput();
-    String str = getInputString();
-    mqttPort = str.toInt();
-    Serial.println();
-    Serial.print(F("New port = "));
-    Serial.println(mqttPort);
-
-    Serial.print(F("Current control channel = "));
-    Serial.println(controlChannel);
-    Serial.println(F("Enter MQTT control channel:"));
-    waitForUserInput();
-    controlChannel = getInputString();
-    Serial.println();
-    Serial.print(F("New control channel = "));
-    Serial.println(controlChannel);
-
-    Serial.print(F("Current status channel = "));
-    Serial.println(statusChannel);
-    Serial.println(F("Enter MQTT status channel:"));
-    waitForUserInput();
-    statusChannel = getInputString();
-    Serial.println();
-    Serial.print(F("New status channel = "));
-    Serial.println(statusChannel);
-
-    Serial.print(F("Current username: "));
-    Serial.println(mqttUsername);
-    Serial.println(F("Enter new username, or just press enter to clear:"));
-    waitForUserInput();
-    mqttPassword = getInputString();
-    Serial.print(F("New MQTT username = "));
-    Serial.println(mqttUsername);
-
-    Serial.print(F("Current password: "));
-    for (uint8_t i = 0; i < mqttPassword.length(); i++) {
-        Serial.print(F("*"));
-    }
-
-    Serial.println();
-    Serial.print(F("Enter new password, or just press enter to clear"));
-    waitForUserInput();
-    mqttPassword = getInputString(true);
-
-    initMQTT();
-    Serial.println();
-}
-
-/**
- * Prompts the user for, and configures static IP settings.
- */
-void configureStaticIP() {
-    isDHCP = false;
-    Serial.println(F("Enter IP address: "));
-    waitForUserInput();
-    ip = getIPFromString(getInputString());
-    Serial.print(F("New IP: "));
-    Serial.println(ip);
-
-    Serial.println(F("Enter gateway: "));
-    waitForUserInput();
-    gw = getIPFromString(getInputString());
-    Serial.print(F("New gateway: "));
-    Serial.println(gw);
-
-    Serial.println(F("Enter subnet mask: "));
-    waitForUserInput();
-    sm = getIPFromString(getInputString());
-    Serial.print(F("New subnet mask: "));
-    Serial.println(sm);
-
-    Serial.println(F("Enter DNS server: "));
-    waitForUserInput();
-    dns = getIPFromString(getInputString());
-    Serial.print(F("New DNS server: "));
-    Serial.println(dns);
-
-    WiFi.config(ip, gw, sm, dns);  // If actual IP set, then disables DHCP and assumes static.
-}
-
-/**
- * Prompts the user for and then attempts to connect to a new
- * WiFi network.
- */
-void configureWiFiNetwork() {
-    Serial.println(F("Enter new SSID: "));
-    waitForUserInput();
-    ssid = getInputString();
-    Serial.print(F("SSID = "));
-    Serial.println(ssid);
-
-    Serial.println(F("Enter new password: "));
-    waitForUserInput();
-    password = getInputString();
-    Serial.print(F("Password = "));
-    Serial.println(password);
-
-    connectWifi();
 }
 
 /**
@@ -1207,7 +981,7 @@ void runDiagnostics() {
     }
 
     Serial.print(F("DIAG: Testing ranging sensor... "));
-    double depth = depthSensor.measureDistanceCm();
+    unsigned long depth = depthSensor.ping_in();
     if (depth > 0) {
         Serial.println(F("PASS"));
     }
@@ -1243,13 +1017,15 @@ void runDiagnostics() {
     Serial.println(F("DIAG: Getting WiFi diags... "));
     WiFi.printDiag(Serial);
 
-    Serial.println(F("DIAG: Verifying TLS connection... "));
-    if (verifyTLS()) {
-        Serial.println(F("DIAG: TLS verification PASSED"));
-    }
-    else {
-        Serial.println(F("DIAG: TLS verification FAIL"));
-    }
+    #ifdef ENABLE_TLS
+        Serial.println(F("DIAG: Verifying TLS connection... "));
+        if (verifyTLS()) {
+            Serial.println(F("DIAG: TLS verification PASSED"));
+        }
+        else {
+            Serial.println(F("DIAG: TLS verification FAIL"));
+        }
+    #endif
 
     Serial.println(F("INFO: Self-diagnostics complete."));
 }
@@ -1259,181 +1035,25 @@ void runDiagnostics() {
  */
 void reportDepth() {
     // Initialze results to 0.
-    double results[5];
-    for (int thisReading = 0; thisReading < sizeof(results); thisReading++) {
+    unsigned long results[5];
+    for (unsigned long thisReading = 0; thisReading < sizeof(results); thisReading++) {
         results[thisReading] = 0;
     }
 
-    // It takes ~100ms to get measure distance, but we need to do some
+    // It takes ~100ms to measure distance, but we need to do some
     // smoothing here, so we'll get 5 samples and average them, which
-    // should take ~500ms to complete.
-    double total = 0.0;
-    for (int thisReading = 0; thisReading < sizeof(results); thisReading++) {
-        total -= results[thisReading];
-        results[thisReading] = depthSensor.measureDistanceIn();
+    // should take ~650ms to complete (including delay).
+    unsigned long total = 0;
+    for (unsigned long thisReading = 0; thisReading < sizeof(results); thisReading++) {
+        results[thisReading] = depthSensor.ping_in();
         total += results[thisReading];
-        delay(10);
+        delay(30);
     }
 
-    double average = total / 5;
+    unsigned long average = total / 5;
     Serial.print(F("INFO: Pit depth = "));
     Serial.print(average);
     Serial.println(F(" inches."));
-}
-
-/**
- * Gets the and stores the pit depth from user input.
- */
-void configurePitDepth() {
-    Serial.println(F("Enter new pit depth (in inches):"));
-    waitForUserInput();
-    String value = getInputString();
-    pitDepth = value.toDouble();
-}
-
-/**
- * Checks commands entered by the user via serial input and carries out
- * the specified action if valid.
- */
-void checkCommand() {
-    String str = "";
-    char incomingByte = Serial.read();
-    switch (incomingByte) {
-        case 'r':
-            // Reset the controller.
-            reboot();
-            break;
-        case 's':
-            // Scan for available networks.
-            getAvailableNetworks();
-            promptConfig();
-            checkCommand();
-            break;
-        case 'c':
-            // Set hostname.
-            Serial.print(F("Current host name: "));
-            Serial.println(hostName);
-            Serial.println(F("Set new host name: "));
-            waitForUserInput();
-            hostName = getInputString();
-            initMDNS();
-
-            // Change network mode.
-            Serial.println(F("Choose network mode (d = DHCP, t = Static):"));
-            waitForUserInput();
-            checkCommand();
-            break;
-        case 'd':
-            // Switch to DHCP mode.
-            if (isDHCP) {
-                Serial.println(F("INFO: DHCP mode already set. Skipping..."));
-                Serial.println();
-            }
-            else {
-                isDHCP = true;
-                Serial.println(F("INFO: Set DHCP mode."));
-                WiFi.config(0U, 0U, 0U, 0U);
-            }
-            promptConfig();
-            checkCommand();
-            break;
-        case 't':
-            // Switch to static IP mode. Request IP settings.
-            configureStaticIP();
-            promptConfig();
-            checkCommand();
-            break;
-        case 'w':
-            // Attempt to reconnect to WiFi.
-            onCheckWiFi();
-            if (WiFi.status() == WL_CONNECTED) {
-                printNetworkInfo();
-                resumeNormal();
-            }
-            else {
-                Serial.println(F("ERROR: Still no network connection."));
-                promptConfig();
-                checkCommand();
-            }
-            break;
-        case 'n':
-            // Connect to a new wifi network.
-            configureWiFiNetwork();
-            promptConfig();
-            checkCommand();
-            break;
-        case 'e':
-            // Resume normal operation.
-            resumeNormal();
-            break;
-        case 'g':
-            // Get network info.
-            printNetworkInfo();
-            promptConfig();
-            checkCommand();
-            break;
-        case 'a':
-            // Manually activate pump.
-            togglePump(true);
-            delay(500);
-            Serial.println(F("--- Press ENTER to stop pump ---"));
-            while (Serial.available()) {
-                ESPCrashMonitor.iAmAlive();
-                char c = Serial.read();
-                if (c == '\r') {
-                    togglePump(false);
-                    break;
-                }
-            }
-            promptConfig();
-            checkCommand();
-            break;
-        case 'x':
-            // Get and report pit depth.
-            reportDepth();
-            delay(2000);
-            promptConfig();
-            checkCommand();
-            break;
-        case 'l':
-            // Let user configure pit depth.
-            configurePitDepth();
-            promptConfig();
-            checkCommand();
-            break;
-        case 'f':
-            // Save configuration changes and restart services.
-            saveConfiguration();
-            WiFi.disconnect(true);
-            onCheckWiFi();
-            promptConfig();
-            checkCommand();
-            break;
-        case 'z':
-            // Reset config to factory default.
-            doFactoryRestore();
-            promptConfig();
-            checkCommand();
-            break;
-        case 'm':
-            // Set MQTT settings.
-            configureMQTT();
-            promptConfig();
-            checkCommand();
-            break;
-        case 'o':
-            // Run hardware diagnostics.
-            runDiagnostics();
-            promptConfig();
-            checkCommand();
-            break;
-        default:
-            // Specified command is invalid.
-            Serial.println(F("WARN: Unrecognized command."));
-            promptConfig();
-            checkCommand();
-            break;
-    }
 }
 
 /**
@@ -1450,18 +1070,7 @@ void failSafe() {
     alarmLED.on();
     wifiLED.on();
     pumpRelay.open();
-    promptConfig();
-    checkCommand();
-}
-
-/**
- * Check for the user to press the 'i' key at the serial console to
- * interrupt normal operation and present the configuration menu.
- */
-void checkInterrupt() {
-    if (Serial.available() > 0 && Serial.read() == 'i') {
-        failSafe();
-    }
+    Console.enterCommandInterpreter();
 }
 
 /**
@@ -1557,16 +1166,6 @@ void initSerial() {
 }
 
 /**
- * Initialize sensor inputs.
- */
-void initSensors() {
-    Serial.print(F("INIT: Initializing sensors... "));
-    depthSensor.begin();
-    depthSensor.setAlarmDistance(ALARM_DEPTH_INCHES);
-    Serial.println(F("DONE"));
-}
-
-/**
  * Initializes output components.
  */
 void initOutputs() {
@@ -1628,7 +1227,82 @@ void onCheckWiFi() {
  */
 void onCheckSensors() {
     Serial.println(F("INFO: Checking sensor..."));
-    depthSensor.loop();
+
+    // TODO Probably need some kind of calibration routine. The distance
+    // measured is the distance from wherever the sensor is in space
+    // and the bottom of the pit. If the sensor is mounted far enough
+    // above the top of the pit, this could skew things. Likewise, if
+    // the sensor is positioned slightly inside the top of the pit, we
+    // need to account for that.
+    unsigned long depth = depthSensor.ping_in();
+    Serial.print(F("DEBUG: Depth acutal = "));
+    Serial.println(depth);
+    Serial.print(F("DEBUG: Pit depth = "));
+    Serial.println(pitDepth);
+
+    // To compute how *full* the pit is, we need to take the inverse of
+    // the reading. So if it's 30 in deep, then it's 0% full (no water).
+    // But if it's 0 in deep then the water is literally right under the
+    // sensor, which at that point would mean it's 100% full and likely
+    // flooding. So the depth reading is the actual pit depth. We need
+    // water depth, so we subtract the current reading from the known
+    // pit depth (+/- a potential offset for sensor position).
+    //depth = pitDepth - depth;
+    if (depth < 0) {
+        depth = 0;
+    }
+
+    if (depth > pitDepth) {
+        depth = pitDepth;
+    }
+
+    if (depth == 0) {
+        percentFull = 100;
+    }
+    else {
+        percentFull = 100 - ((depth * 100) / pitDepth);
+    }
+
+    if (percentFull < 0) {
+        percentFull = 0;
+    }
+
+    lastDepth = depth;
+    Serial.print(F("INFO: Water level change event. Depth: "));
+    Serial.print(depth);
+    Serial.print(F(" inches ("));
+    Serial.print(percentFull);
+    Serial.println(F("%)"));
+
+    // TODO make these threshholds constant (and possibly configurable).
+    if (!manualPumpMode) {
+        if (pumpRelay.isOpen() && percentFull >= 70) {
+            togglePump(true);
+        }
+        else if (pumpRelay.isClosed() && percentFull <= 15) {
+            togglePump(false);
+        }
+    }
+
+    if (depth <= ALARM_DEPTH_INCHES) {
+       if (alarmLED.isOff()) {
+           alarmLED.on();
+           if (!alarmDisabled) {
+            alarmBuzzer.on();
+           }
+           Serial.println(F("WARN: Water level CRITICAL!"));
+       }
+    }
+    else {
+        if (alarmLED.isOn()) {
+            alarmLED.off();
+            alarmBuzzer.off();
+            Serial.println(F("INFO: Water level within safe limit."));
+        }
+    }
+
+    delay(100);
+    publishSystemState();
 }
 
 /**
@@ -1643,6 +1317,218 @@ void initCrashMonitor() {
 }
 
 /**
+ * Callback handler for the 'activate pump' command. This activates the pump
+ * relay and waits for the user to press 'RETURN' to stop the pump
+ */
+void handleActivatePump() {
+    // Manually activate pump.
+    togglePump(true);
+    delay(500);
+    Serial.println(F("--- Press RETURN to stop pump ---"));
+    while (Serial.available()) {
+        ESPCrashMonitor.iAmAlive();
+        char c = Serial.read();
+        if (c == '\r') {
+            togglePump(false);
+            break;
+        }
+    }
+
+    Serial.println();
+}
+
+/**
+ * Callback handler for the 'factory restore' command. This restores the
+ * configuration back to factory defaults and reboots the device.
+ */
+void handleFactoryRestore() {
+    doFactoryRestore();
+    reboot();
+}
+
+/**
+ * Callback handler for the 'configure host name' command. This sets the
+ * new host name in the running configuration and reinitializes MDNS.
+ */
+void onNewHostName(const char* newHostName) {
+    hostName = newHostName;
+    initMDNS();
+}
+
+/**
+ * Callback handler for the 'configure network' command when switching to DHCP
+ * mode. This switches from static network config to DHCP (if not already set).
+ */
+void onSwitchToDhcp() {
+    if (isDHCP) {
+        Serial.println(F("INFO: DHCP mode already set. Skipping..."));
+        Serial.println();
+    }
+    else {
+        isDHCP = true;
+        Serial.println(F("INFO: Set DHCP mode."));
+        WiFi.config(0U, 0U, 0U, 0U);
+    }
+}
+
+/**
+ * Callback handler for the 'configure network' command when switching to a
+ * static network config. This configures the network interface with the
+ * new static address settings.
+ */
+void onSwitchToStaticConfig(IPAddress newIp, IPAddress newSm, IPAddress newGw, IPAddress newDns) {
+    ip = newIp;
+    sm = newSm;
+    gw = newGw;
+    dns = newDns;
+    WiFi.config(ip, gw, sm, dns);  // If actual IP set, then disables DHCP and assumes static.
+}
+
+/**
+ * Callback handler for the 'reconnect' command. This attempts to reconnect to
+ * the configured WiFi network. If successful, resumes normal operation, dumps
+ * the network config to console and exits the CLI. If unsuccessful, warns the
+ * user and returns to the command menu. 
+ */
+void onReconnectFromConsole() {
+    // Attempt to reconnect to WiFi.
+    onCheckWiFi();
+    if (WiFi.status() == WL_CONNECTED) {
+        printNetworkInfo();
+        resumeNormal();
+    }
+    else {
+        Serial.println(F("ERROR: Still no network connection."));
+        Console.enterCommandInterpreter();
+    }
+}
+
+/**
+ * Callback handler for the 'configure WiFi' command. This sets the new
+ * SSID and password in the running config and connects to the new WiFi
+ * network.
+ */
+void onWifiConfig(String newSsid, String newPassword) {
+    ssid = newSsid;
+    password = newPassword;
+    connectWifi();
+}
+
+/**
+ * Saves the running configuration to flash memory so that the current
+ * configuration settings can be used on startup. IMPORTANT NOTE:
+ * If any changes to the current running configuration are NOT saved,
+ * then they will be discarded upon reboot and reverted to their last
+ * known (or default) values.
+ */
+void onSaveConfig() {
+    saveConfiguration();
+    WiFi.disconnect(true);
+    onCheckWiFi();
+}
+
+/**
+ * Callback handler that receives the new MQTT configuration settings. This
+ * disconnects from any currently connected MQTT broker, sets the new config
+ * and then reinitializes the MQTT client.
+ * @param newBroker The new MQTT broker hostname or address.
+ * @param newPort The new MQTT host port.
+ * @param newUsername The new MQTT username.
+ * @param newPass The new MQTT password.
+ * @param newConChan The new MQTT control channel to subscribe to.
+ * @param newStatChan The new MQTT status chanel to publish to.
+ */
+void onMqttConfigCommand(String newBroker, int newPort, String newUsername, String newPass, String newConChan, String newStatChan) {
+    if (mqttClient.connected()) {
+        mqttClient.unsubscribe(controlChannel.c_str());
+        mqttClient.disconnect();
+    }
+    mqttBroker = newBroker;
+    mqttPort = newPort;
+    mqttUsername = newUsername;
+    mqttPassword = newPass;
+    controlChannel = newConChan;
+    statusChannel = newStatChan;
+    initMQTT();
+    Serial.println();
+}
+
+/**
+ * Callback handler for the 'report pit depth' command. This averages a
+ * multi-sample reading and then displays it in the console.
+ */
+void reportPitDepthHandler() {
+    ESPCrashMonitor.defer();
+    reportDepth();
+    delay(1000);
+}
+
+/**
+ * Callback handler that receives the new pit depth for the 'configure pit
+ * depth' command. This sets the new pit depth in the running configuration.
+ */
+void configPitDepthHandler(int newDepth) {
+    pitDepth = newDepth;
+    Serial.print(F("INFO: New depth = "));
+    Serial.println(pitDepth);
+    Serial.println();
+}
+
+/**
+ * Callback handler for the 'disable alarm' command. This turns off the
+ * alarm buzzer (if on), then sets the disabled flag to prevent the system
+ * from further activating it.
+ */
+void handleAlarmDisabled() {
+    alarmBuzzer.off();
+    alarmDisabled = true;
+    Serial.println(F("WARN: Alarm disabled."));
+    Serial.println();
+}
+
+/**
+ * Callback handler for the 'enable alarm' command. This clears the disable
+ * flag allowing the system to activate the alarm buzzer whenever the alarm
+ * condition is met again.
+ */
+void handleAlarmEnabled() {
+    alarmDisabled = false;
+    Serial.println(F("INFO: Alarm enabled."));
+    Serial.println();
+}
+
+/**
+ * Initialize the CLI.
+ */
+void initConsole() {
+    Serial.print(F("INIT: Initializing console... "));
+    Console.setHostName(hostName);
+    Console.setMqttConfig(mqttBroker, mqttPort, mqttUsername, mqttPassword, controlChannel, statusChannel);
+
+    Console.onActivatePump(handleActivatePump);
+    Console.onRebootCommand(reboot);
+    Console.onScanNetworks(getAvailableNetworks);
+    Console.onHostNameChange(onNewHostName);
+    Console.onDhcpConfig(onSwitchToDhcp);
+    Console.onStaticConfig(onSwitchToStaticConfig);
+    Console.onReconnectCommand(onReconnectFromConsole);
+    Console.onWiFiConfigCommand(onWifiConfig);
+    Console.onResumeCommand(resumeNormal);
+    Console.onGetNetInfoCommand(printNetworkInfo);
+    Console.onSaveConfigCommand(onSaveConfig);
+    Console.onMqttConfigCommand(onMqttConfigCommand);
+    Console.onConsoleInterrupt(failSafe);
+    Console.onFactoryRestore(handleFactoryRestore);
+    Console.onReportPitDepth(reportPitDepthHandler);
+    Console.onConfigurePithDepth(configPitDepthHandler);
+    Console.onRunDiagnostics(runDiagnostics);
+    Console.onAlarmDisabled(handleAlarmDisabled);
+    Console.onAlarmDisabled(handleAlarmEnabled);
+
+    Serial.println(F("DONE"));
+}
+
+/**
  * Bootstrap routine. Executes once at boot and initializes all subsystems in sequence.
  */
 void setup() {
@@ -1650,21 +1536,25 @@ void setup() {
     initSerial();
     initCrashMonitor();
     initOutputs();
-    initSensors();
     initFilesystem();
     initWiFi();
     initMDNS();
     initOTA();
     
-    if (loadCertificates()) {
-        if (verifyTLS()) {
+    #ifdef ENABLE_TLS
+        if (loadCertificates() && verifyTLS()) {
             connSecured = true;
             initMQTT();
         }
-    }
+    #else
+        initMQTT();
+    #endif
     
     initTaskManager();
+    initConsole();
     Serial.println(F("INIT: Boot sequence complete."));
+    pumpLED.off();
+    alarmLED.off();
     sysState = SystemState::NORMAL;
     ESPCrashMonitor.enableWatchdog(ESPCrashMonitorClass::ETimeout::Timeout_2s);
 }
@@ -1675,7 +1565,7 @@ void setup() {
  */
 void loop() {
     ESPCrashMonitor.iAmAlive();
-    checkInterrupt();
+    Console.checkInterrupt();
     taskMan.execute();
     #ifdef ENABLE_MDNS
         mdns.update();
