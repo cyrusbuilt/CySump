@@ -3,5 +3,8 @@ String CySumpVersion "Firmware version: [%s]" { channel="mqtt:topic:mosquitto:cy
 String CySumpSysState <status> { channel="mqtt:topic:mosquitto:cysump:SysState" }
 String CySumpPitState "Pit State: [%s]" <cistern> { channel="mqtt:topic:mosquitto:cysump:PitState" }
 Number CySumpWaterLevel "Water Level [%d %%]" <water> { channel="mqtt:topic:mosquitto:cysump:WaterLevel" }
+Number CySumpWaterDepth "Water Depth [%d in]" <returnpipe> { channel="mqtt:topic:mosquitto:cysump:WaterDepth" }
+Number CySumpWaterDepthPeriod
 Switch CySumpPump "Sump Pump" <pump> { channel="mqtt:topic:mosquitto:cysump:Pump" }
+Switch CySumpAlarm "Alarm" <siren> { channel="mqtt:topic:mosquitto:cysump:AlarmState" }
 String CySumpAction "Actions" <switch>

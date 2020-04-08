@@ -6,4 +6,6 @@ Thing mqtt:topic:mosquitto:cysump "MQTT Thing CySump" (mqtt:broker:mosquitto) @ 
         Type string : SysID [stateTopic="cysump/status", transformationPattern="JSONPATH:$.client_id"]
         Type string : PitState [stateTopic="cysump/status", transformationPattern="JSONPATH:$.pitState"]
         Type number : WaterLevel [stateTopic="cysump/status", transformationPattern="JSONPATH:$.waterLevelPercent"]
+        Type number : WaterDepth [stateTopic="cysump/status", transformationPattern="JSONPATH:$.waterDepth"]
+        Type switch : AlarmState [stateTopic="cysump/status", transformationPattern="JSONPATH:$.alarmEnabled"]
 }

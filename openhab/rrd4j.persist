@@ -1,0 +1,13 @@
+// NOTE: You only need this file if you do not already have a persist file for rrd4j
+// or if you are using different persistence storage.
+Strategies {
+    everyMinute : "0 * * * * ?"
+    everyHour : "0 0 * * * ?"
+    everyDay  : "0 0 0 * * ?"
+
+    default = everyChange
+}
+
+Items {
+    CySumpWaterDepth : strategy = everyChange, restoreOnStartup
+}

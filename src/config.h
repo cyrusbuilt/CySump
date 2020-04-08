@@ -1,5 +1,6 @@
 /**
- * 
+ * System Configuration defaults. These values will be used at boot time
+ * if no overriding configuration is present.
  */
 
 #ifndef config_h
@@ -10,6 +11,7 @@
 // Configuration
 #define ENABLE_OTA                              // Comment this line to disable OTA updates.
 #define ENABLE_MDNS                             // Comment this line to disable the MDNS.
+//#define ENABLE_TLS                              // Comment this line to disable TLS (MQTT-over-SSL) support.
 #define PIT_DEPTH_INCHES 30                     // The depth of the sump pit (inches).
 #define ALARM_DEPTH_INCHES 5                    // The depth at which to consider an alarm state (inches left until full)
 #define CONFIG_FILE_PATH "/config.json"         // The config file path. Do not alter unless you are sure.

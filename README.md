@@ -8,11 +8,11 @@ The code in this repository represents the Firmware for the CySump IoT sump pump
 
 ## Important Note on Security
 
-CySump uses [MQTT](http://mqtt.org/) to pass control messages in JSON format and in turn the device sends status messages in JSON format to MQTT subscribers (such as OpenHAB2). Additionally, these messages are transferred to/from MQTT over TLS using SSL certificates so that the messages are encrypted.  You cannot send control messages to CySump directly. You have to publish them to the control channel on the MQTT broker that CySump is subscribed to. Additionally, you would need the appropriate certificate and SHA256 fingerprint to connect to and publish the control messages. This security architecture is certainly not infalible, but definitely adds a strong layer of security that was non-existent in previous versions and also provides some means of hardening that security even further (such as using certificates signed by an RSA CA (as opposed to self-signed certs) and using password authentication with the MQTT broker on top of that. You can even configure OpenHAB2 to communicate with the MQTT broker using TLS as well, although this is overkill if the broker is running on the same machine as OpenHAB2 and/or the MQTT standard port is bound to the OpenHAB2 host).
+CySump uses [MQTT](http://mqtt.org/) to pass control messages in JSON format and in turn the device sends status messages in JSON format to MQTT subscribers (such as OpenHAB2). Additionally, these messages are transferred to/from MQTT over TLS using SSL certificates so that the messages are encrypted.  You cannot send control messages to CySump directly. You have to publish them to the control channel on the MQTT broker that CySump is subscribed to. Additionally, you would need the appropriate certificate and SHA256 fingerprint (when TLS is enabled) to connect to and publish the control messages. This security architecture is certainly not infalible, but definitely adds a strong layer of security that was non-existent in previous versions and also provides some means of hardening that security even further (such as using certificates signed by an RSA CA (as opposed to self-signed certs) and using password authentication with the MQTT broker on top of that. You can even configure OpenHAB2 to communicate with the MQTT broker using TLS as well, although this is overkill if the broker is running on the same machine as OpenHAB2 and/or the MQTT standard port is bound to the OpenHAB2 host).
 
 ## Theory of Operation
 
-The way this is intended to work is: when the device detects the water level in the pit is at a certain level (at least 40% full by default), it turns on the pump via a relay and when the water level drops back down to at least 5% (by default) it shuts the pump off. If for some reason, the water level reaches roughly 83% full (about 5 inches from the water surface to the top of the pit), then the piezo buzzer will turn on and will not turn back off until the water drops below the alarm threshold. If using the OpenHab2 components, then a push notification will be sent when the water level reaches roughly 80% full and then again if the pit actually floods. The idea is not only to be able to control the pump, but alert the user to critical water level and flood conditions. Ideally, this detection and alert mechanism could be used to minimize or prevent damage.
+The way this is intended to work is: when the device detects the water level in the pit is at a certain level (at least 40% full by default), it turns on the pump via a relay and when the water level drops back down to at least 5% (by default) it shuts the pump off. If for some reason, the water level reaches roughly 83% full (about 5 inches from the water surface to the top of the pit), then the piezo buzzer will turn on and will not turn back off until the water drops below the alarm threshold. If using the OpenHab2 components, then a push notification will be sent when the water level reaches roughly 80% full and then again if the pit actually floods. The idea is not only to be able to control the pump, but alert the user to critical water level and flood conditions. Ideally, this detection and alert mechanism could be used to minimize or prevent damage.  Water level detection is performed using a special type of sonar ranging sensor called a JSN-SR04T, which is waterproof and uses a single transducer. It works by sending out 'echo' sound waves called a 'ping' and then measuring the amount of time it takes for the sound waves to bounce off the target and come back to determine distance.
 
 ## Configuration
 
@@ -20,6 +20,7 @@ The config.h file contains default configuration directives. These options are t
 
 - ENABLE_OTA: If you do not wish to support OTA updates, just comment this define.
 - ENABLE_MDNS: If you do not wish to support [MDNS](https://tttapa.github.io/ESP8266/Chap08%20-%20mDNS.html), comment this define.
+- ENABLE_TLS: If you do not wish to use TLS support (MQTT-over-SSL), comment this define.
 - PIT_DEPTH_INCHES: The depth of the pit in inches. Or more importantly, the distance between the sensor and the bottom of the sump pit. Default is 30.
 - ALARM_DEPTH_INCES: This is the *remaining* depth to consider the sump pit to be critical. This is the distance (in inches) from the sensor to the water surface. Default is 5 inches (remaining before flooding).
 - CONFIG_FILE_PATH: This is the path to the configuration file. The default is /config.json. The values in this file will override these defaults.
@@ -77,7 +78,7 @@ This configuration file is pretty self explanatory and one is included in the so
 - serverFingerprintPath: The path to the file containing the MQTT broker's SHA256 fingerprint. Default is '/mqtt.fpn'.
 - caCertificatePath: The path to the CA certificate that the MQTT broker's certificate was signed with. Default is '/ca.crt'.
 
-If the above values are omitted or invalid, then the system will fail during loadCertificates() and will not be able to connect to MQTT.
+If the above values are omitted or invalid, then the system will fail during loadCertificates() and will not be able to connect to MQTT.  However, if ENABLE_TLS is commented out, they will be ignored and the system will attempt to connect to the MQTT broker without TLS.
 
 ## Getting Started
 
@@ -114,8 +115,10 @@ If the device ever fails to connect to WiFi or if you press the 'I' key on your 
 
 ![Console Menu](assets/serial_console.jpg)
 
-- Reboot - press 'r' - Self-explanatory. Reboots the device.
-- Configure network - press 'c'. Configure the network.
+- Activate Pump - Press 'a'. Activates the pump and ignores inputs until the user stops the pump.
+- Reboot - Press 'r'. Self-explanatory. Reboots the device.
+- Configure pit depth - Press 'l'. Configure the depth of the sump pit.
+- Configure network - Press 'c'. Configure the network.
 
 - - Press 'd' for DHCP or 't' for static IP.
 
@@ -133,11 +136,13 @@ If the device ever fails to connect to WiFi or if you press the 'I' key on your 
 
 - Get network info - Press 'g'. This will dump network information to the serial console (IP config, WiFi connection info).
 
-- Activiate pump - Press 'a'. This allows the user to manually activate the pump.
+- Run diagnostics - Press 'o'. This will run system diagnostics (similar to POST) to verify critifcal system functions are working correctly.
 
-- Get pit depth - Press 'x'. This lets you get the current depth reading (without triggering any alarm states). Useful for determining the actual depth for configuration.
+- Report pit depth - Press 'x'. This lets you get the current depth reading (without triggering any alarm states). Useful for determining the actual depth for configuration.
 
-- Run diagnostics - Press 'o'. This will run a self-test, checking the input and output componets, network functionality and communication with MQTT broker.
+- Enable alarm - Press 'q'. This enables the audible alarm if disabled.
+
+- Disable alarm - Press 'u'. This disables the audible alarm until manually enabled again.
 
 - Save config changes - Press 'f'. This will save any configuration changes currently stored in memory to config.json.
 
@@ -171,8 +176,8 @@ Once the board is assembled (either by having the board etched or by just solder
 
 Good. I hope so.
 
-For those of you that have done this sort of thing before, this should be trivial. If you don't have any experience with this stuff, please consider having an electrician do the work or at least someone with experience.  The best approach is *NOT* to modify the power cord on your pump. My best recommendation would be to a 3-pronged extension cord, cut it in half and then splice the ground and neutral wires back together be leave at lest a few inches of wire out of the outer sheath. When you splice those wires, use something heavy duty (good wire nuts, solder and shrink tube, or maybe good crimp-on connectors rated for high voltage).
+For those of you that have done this sort of thing before, this should be trivial. If you don't have any experience with this stuff, please consider having an electrician do the work or at least someone with experience.  The best approach is *NOT* to modify the power cord on your pump. My best recommendation would be to a 3-pronged extension cord, cut it in half and then splice the ground and neutral wires back together but leave at lest a few inches of wire out of the outer sheath. When you splice those wires, use something heavy duty (good wire nuts, solder and shrink tube, or maybe good crimp-on connectors rated for high voltage. But don't be silly and just twist them together and wrap them in electrical tape. That's just begging for trouble.
 
 Strip both pieces of remaining 'hot' wire. Connect the 'hot' wire from the male plug to the center terminal of a 3-position toggle switch rated for at least 120VAC @ 10A. Connect the 'hot' wire of the female plug to the NO terminal on the relay. Take another wire of the same guage and connect one end to the NO terminal as well. Take the other end and connect it to one of the other terminals on the toggle switch. When the switch is in the center position, the pump is 'off' and will NOT run. When switched to whatever position that other terminal is, it will be 'manually on'. Now take another wire of the same guage and connect one end to the oposite terminal on the toggle switch and then the other end to the COM terminal on the relay. When switch to this position, the pump will be 'auto', meaning it is controlled by CySump. Ideally, all the switch and wiring will be inside of a proper electrical box with a face plate the switch mounts to. Now connect the male plug to the electrical outlet, and plug the pump into the female end. Test 'manual' mode to verify the pump turns on and nothing bad happens. DO NOT let the pump run for more than a few seconds if there is no water in the pit. You can burn out your pump.
 
-Now you need to mount the HCSR04 sensor. How you do this is up to you and depends on the sump pit. You *should* have a lid on the pit. One option is to glue the sensor to the underside of the lid. Another would be to attach it to a bracket or board that straddles the top of the sump pit. However you choose to do it, keep in mind that the sensor will be exposed to moisture so use a method that will not allow the sensor to become dismounted. Also, it would be ideal to coat or cover the electrical connections and components (except the cans) to prevent corrosion. A future version will use a different sensor for this reason. However you choose to mount it, keep in mind that the depth reported by the sensor will be the total distance from the sensor to the bottom of the pit. It would be worth checking pit depth from the serial console menu ('x' command) once the sensor is mounted and the pit is completely dry. This would give you a definitive baseline depth reading, not just of the depth of the pit, but more importantly, the distance from where the sensor is mounted, to the bottom of the pit. Even though the standard depth is 30 inches, usually there is some gravel or something like that at the bottom and you also have to consider exactly where the sensor is mounted, all of which affect the depth reading. Adjust the value for PIT_DEPTH_INCHES in config.h to reflect that value. But before you can do that, you will need to make a cable of the appropriate length (4 leads) to reach between the sensor and the CySump board. Both ends should have female pin connectors.
+Now you need to mount the JSN-SR04T sensor. How you do this is up to you and depends on the sump pit. You *should* have a lid on the pit. One option is to drill a hole in the lid and push the sensor through and let it clip into place. Another would be to attach it to a bracket or board that straddles the top of the sump pit. However you choose to do it, keep in mind that the sensor will be exposed to moisture so use a method that will not allow the sensor to become dismounted. The JSN-SR04T is water proof so you shouldn't have to worry about it getting wet or corroding. However you choose to mount it, keep in mind that the depth reported by the sensor will be the total distance from the sensor to the bottom of the pit (or the surface of the water). It would be worth checking pit depth from the serial console menu ('x' command) once the sensor is mounted and the pit is completely dry. This would give you a definitive baseline depth reading, not just of the depth of the pit, but more importantly, the distance from where the sensor is mounted, to the bottom of the pit. Even though the standard depth is 30 inches, usually there is some gravel or something like that at the bottom and you also have to consider exactly where the sensor is mounted, all of which affect the depth reading. Adjust the value for PIT_DEPTH_INCHES in config.h to reflect that value.  Sensor position is important!! You may need to take several readings with and without water to get a good baseline. The sensor cannot be directly in the middle, directly over the pump, or too close to the side wall, and should be away from any inflow if possible.

@@ -7,7 +7,7 @@ when
     Item CySumpPump received command
 then
     logInfo(fileName, "Sump pump received command: " + receivedCommand)
-    var String ctrlMsg = "{\"client_id\":\"cygarage\",\"command\":"
+    var String ctrlMsg = "{\"client_id\":\"cysump\",\"command\":"
     if (receivedCommand === ON) {
         ctrlMsg += "2"
     }
@@ -28,7 +28,7 @@ then
     val String cmd = CySumpAction.state.toString()
     logInfo(fileName, "Got action: " + cmd)
 
-    val String cmdString = "{\"client_id\":\"cygarage\",\"command\":" + cmd + "}"
+    val String cmdString = "{\"client_id\":\"cysump\",\"command\":" + cmd + "}"
 
     logInfo(fileName, "Publishing MQTT payload " + cmdString + " to channel: " + controlChannel)
     actionsBroker.publishMQTT(controlChannel, cmdString)
@@ -53,7 +53,26 @@ then
     }
 
     if (msg.length() > 0) {
-        logWarn(fileName, msg);
+        logWarn(fileName, msg)
         sendBroadcastNotification(msg)
     }
+end
+
+rule "AlarmContro"
+when
+    Item CySumpAlarm received command
+then
+    logInfo(fileName, "Sump pump received command: " + receivedCommand)
+    var String ctrlMsg = "{\"client_id\":\"cysump\",\"command\":"
+    if (receivedCommand === ON) {
+        ctrlMsg += "7"
+    }
+    else {
+        ctrlMsg += "6"
+    }
+
+    ctrlMsg += "}"
+    logInfo(fileName, "Publishing MQTT payload " + ctrlMsg + " to channel: " + controlChannel)
+    actionsBroker.publishMQTT(controlChannel, ctrlMsg)
+    CySumpPump.postUpdate(NULL)
 end

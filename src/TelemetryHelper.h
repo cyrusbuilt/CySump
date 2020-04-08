@@ -63,7 +63,18 @@ enum class ControlCommand: uint8_t {
      * Request system status. Causes a status message to be published to
      * the MQTT status topic.
      */
-    REQUEST_STATUS = 5
+    REQUEST_STATUS = 5,
+
+    /**
+     * Disable (silence) the audible alarm. Does not disable the alarm LED or
+     * prevent push notifications from openhab.
+     */
+    DISABLE_ALARM = 6,
+
+    /**
+     * Enable the audible alarm.
+     */
+    ENABLE_ALARM = 7
 };
 
 /**

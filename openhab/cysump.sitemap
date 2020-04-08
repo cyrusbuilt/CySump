@@ -10,6 +10,14 @@ sitemap cysump label="CySump" {
         Text item=CySumpWaterLevel
         Switch item=CySumpPump mappings=[ON="Start",OFF="Stop"]
         Text item=CySumpPitState
+        Switch item=CySumpAlarm mappings=[ON="Enable",OFF="Silence"]
         Selection item=CySumpAction label="Actions" mappings=[0="Disable",1="Enable",4="Reboot",5="Request Status"]
+    }
+    Frame label="Depth" {
+        Text item=CySumpWaterDepth
+        Switch item=CySumpWaterDepthPeriod label="Chart Period" mappings=[0="Hour", 1="Day", 2="Week"]
+        Chart item=CySumpWaterDepth period=h refresh=30000 visibility=[CySumpWaterDepthPeriod==0,CySumpWaterDepthPeriod==NULL]
+        Chart item=CySumpWaterDepth period=D refresh=30000 visibility=[CySumpWaterDepthPeriod==1]
+        Chart item=CySumpWaterDepth period=W refresh=30000 visibility=[CySumpWaterDepthPeriod==2]
     }
 }
