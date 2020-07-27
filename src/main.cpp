@@ -4,7 +4,16 @@
  * 
  * Author:
  *  Cyrus Brunner <cyrusbuilt at gmail dot com>
+ * 
+ * This is the firmware for the CySump IoT Sump Pump Controller. This firmware
+ * specifically targets the Adafruit Huzzah ESP8266, but could easily be
+ * adapted to work on any ESP8266 MCU.  It should be relatively easy to adapt
+ * to work on ESP32 modules as well, although there would need to be some
+ * dependency changes.
  */
+
+// TODO Switch from using SPIFFS to LittleFS.
+// TODO Implement FS checks in self-diags
 
 #ifndef ESP8266
     #error This firmware is only compatible with ESP8266 controllers.
@@ -25,25 +34,22 @@
 #include "ResetManager.h"
 #include "ESPCrashMonitor-master/ESPCrashMonitor.h"
 #include "ArduinoJson.h"
+#include "ESP8266Ping.h"
 #include "PubSubClient.h"
 #include "TelemetryHelper.h"
-#include "ESP8266Ping.h"
-#include "NewPing.h"
+#include "WaterLevelSensor.h"
 #include "config.h"
 #include "Console.h"
 
 #define FIRMWARE_VERSION "1.4"
 
-#define MAX_DISTANCE_CM 400       /** The maximum supported distance for reliable ranging (cm). */
-
 // Pin definitions
 #define PIN_WIFI_LED 2
 #define PIN_ALARM_LED 4
 #define PIN_PUMP_LED 5
-#define PIN_TRIGGER 12
-#define PIN_ECHO 14
 #define PIN_RELAY 15
 #define PIN_BUZZER 16
+#define PIN_LEVEL_SENSOR A0
 
 // Forward declarations
 void onRelayStateChange(RelayInfo* sender);
@@ -65,7 +71,7 @@ void onSyncClock();
     WiFiClient wifiClient;
 #endif
 PubSubClient mqttClient(wifiClient);
-NewPing depthSensor(PIN_TRIGGER, PIN_ECHO, MAX_DISTANCE_CM);
+WaterLevelSensor sensor(PIN_LEVEL_SENSOR);
 Relay pumpRelay(PIN_RELAY, onRelayStateChange, "GARAGE_DOOR");
 LED alarmLED(PIN_ALARM_LED, NULL);
 LED wifiLED(PIN_WIFI_LED, NULL);
@@ -88,7 +94,9 @@ String fingerprintString;
 String mqttUsername = "";
 String mqttPassword = "";
 int mqttPort = MQTT_PORT;
-unsigned long pitDepth = PIT_DEPTH_INCHES;
+int activatePercent = DEFAULT_PUMP_ACTIVATE_PERCENT;
+int deactivatePercent = DEFAULT_PUMP_DEACTIVATE_PERCENT;
+float pitDepth = PIT_DEPTH_INCHES;
 volatile int percentFull = 0;
 volatile unsigned long lastDepth = 0;
 bool isDHCP = false;
@@ -334,6 +342,8 @@ void saveConfiguration() {
     doc["mqttStatusChannel"] = statusChannel;
     doc["mqttUsername"] = mqttUsername;
     doc["mqttPassword"] = mqttPassword;
+    doc["activatePercentFull"] = activatePercent;
+    doc["deactivatePercent"] = deactivatePercent;
     #ifdef ENABLE_TLS
         doc["serverFingerPrintPath"] = serverFingerprintPath;
         doc["caCertificatePath"] = caCertificatePath;
@@ -440,6 +450,8 @@ void loadConfiguration() {
     statusChannel = doc["mqttStatusChannel"].as<String>();
     mqttUsername = doc["mqttUsername"].as<String>();
     mqttPassword = doc["mqttPassword"].as<String>();
+    activatePercent = doc["activatePercentFull"].as<int>();
+    deactivatePercent = doc["deactivatePercent"].as<int>();
     #ifdef ENABLE_TLS
         serverFingerprintPath = doc["serverFingerprintPath"].as<String>();
         caCertificatePath = doc["caCertificatePath"].as<String>();
@@ -981,7 +993,7 @@ void runDiagnostics() {
     }
 
     Serial.print(F("DIAG: Testing ranging sensor... "));
-    unsigned long depth = depthSensor.ping_in();
+    float depth = sensor.read();
     if (depth > 0) {
         Serial.println(F("PASS"));
     }
@@ -1035,22 +1047,22 @@ void runDiagnostics() {
  */
 void reportDepth() {
     // Initialze results to 0.
-    unsigned long results[5];
-    for (unsigned long thisReading = 0; thisReading < sizeof(results); thisReading++) {
+    float results[5];
+    for (uint8_t thisReading = 0; thisReading < sizeof(results); thisReading++) {
         results[thisReading] = 0;
     }
 
     // It takes ~100ms to measure distance, but we need to do some
     // smoothing here, so we'll get 5 samples and average them, which
     // should take ~650ms to complete (including delay).
-    unsigned long total = 0;
-    for (unsigned long thisReading = 0; thisReading < sizeof(results); thisReading++) {
-        results[thisReading] = depthSensor.ping_in();
+    float total = 0;
+    for (uint8_t thisReading = 0; thisReading < sizeof(results); thisReading++) {
+        results[thisReading] = sensor.getLevelInches();
         total += results[thisReading];
         delay(30);
     }
 
-    unsigned long average = total / 5;
+    float average = total / 5;
     Serial.print(F("INFO: Pit depth = "));
     Serial.print(average);
     Serial.println(F(" inches."));
@@ -1071,6 +1083,16 @@ void failSafe() {
     wifiLED.on();
     pumpRelay.open();
     Console.enterCommandInterpreter();
+}
+
+/**
+ * Initialize the fluid level sensor.
+ */
+void initDepthSensor() {
+    Serial.print(F("INIT: Initializing depth sensor... "));
+    sensor.begin();
+    sensor.setTapeLengthCm(pitDepth);
+    Serial.println(F("DONE"));
 }
 
 /**
@@ -1234,9 +1256,17 @@ void onCheckSensors() {
     // above the top of the pit, this could skew things. Likewise, if
     // the sensor is positioned slightly inside the top of the pit, we
     // need to account for that.
-    unsigned long depth = depthSensor.ping_in();
+    float depthAverage = sensor.getLevelInches();
+    if (depthAverage < 0) {
+        depthAverage = 0;
+    }
+
+    if (depthAverage > pitDepth) {
+        depthAverage = pitDepth;
+    }
+
     Serial.print(F("DEBUG: Depth acutal = "));
-    Serial.println(depth);
+    Serial.println(depthAverage);
     Serial.print(F("DEBUG: Pit depth = "));
     Serial.println(pitDepth);
 
@@ -1247,44 +1277,35 @@ void onCheckSensors() {
     // flooding. So the depth reading is the actual pit depth. We need
     // water depth, so we subtract the current reading from the known
     // pit depth (+/- a potential offset for sensor position).
-    //depth = pitDepth - depth;
-    if (depth < 0) {
-        depth = 0;
-    }
 
-    if (depth > pitDepth) {
-        depth = pitDepth;
-    }
-
-    if (depth == 0) {
+    if (depthAverage == 0) {
         percentFull = 100;
     }
     else {
-        percentFull = 100 - ((depth * 100) / pitDepth);
+        percentFull = 100 - ((depthAverage * 100) / pitDepth);
     }
 
     if (percentFull < 0) {
         percentFull = 0;
     }
 
-    lastDepth = depth;
+    lastDepth = depthAverage;
     Serial.print(F("INFO: Water level change event. Depth: "));
-    Serial.print(depth);
+    Serial.print(depthAverage);
     Serial.print(F(" inches ("));
     Serial.print(percentFull);
     Serial.println(F("%)"));
 
-    // TODO make these threshholds constant (and possibly configurable).
     if (!manualPumpMode) {
-        if (pumpRelay.isOpen() && percentFull >= 70) {
+        if (pumpRelay.isOpen() && percentFull >= activatePercent) {
             togglePump(true);
         }
-        else if (pumpRelay.isClosed() && percentFull <= 15) {
+        else if (pumpRelay.isClosed() && percentFull <= deactivatePercent) {
             togglePump(false);
         }
     }
 
-    if (depth <= ALARM_DEPTH_INCHES) {
+    if (depthAverage <= ALARM_DEPTH_INCHES) {
        if (alarmLED.isOff()) {
            alarmLED.on();
            if (!alarmDisabled) {
@@ -1472,6 +1493,7 @@ void configPitDepthHandler(int newDepth) {
     Serial.print(F("INFO: New depth = "));
     Serial.println(pitDepth);
     Serial.println();
+    sensor.setTapeLengthCm(pitDepth / 2.54);
 }
 
 /**
@@ -1495,6 +1517,28 @@ void handleAlarmEnabled() {
     alarmDisabled = false;
     Serial.println(F("INFO: Alarm enabled."));
     Serial.println();
+}
+
+/**
+ * Handler for when the user gets a minimum level reading
+ * during calibration.
+ */
+void handleMinSensorLevel() {
+    float reading = sensor.read();
+    Serial.print(F("INFO: Min Sensor value: "));
+    Serial.println(reading);
+    sensor.setMinValue(reading);
+}
+
+/**
+ * Handler for when the user ges maximum level reading
+ * during calibration.
+ */
+void handleMaxSensorLevel() {
+    float reading = sensor.read();
+    Serial.print(F("INFO: Max Sensor value: "));
+    Serial.println(reading);
+    sensor.setMaxValue(reading);
 }
 
 /**
@@ -1524,6 +1568,8 @@ void initConsole() {
     Console.onRunDiagnostics(runDiagnostics);
     Console.onAlarmDisabled(handleAlarmDisabled);
     Console.onAlarmDisabled(handleAlarmEnabled);
+    Console.onMinSensorReading(handleMinSensorLevel);
+    Console.onMaxSensorReading(handleMaxSensorLevel);
 
     Serial.println(F("DONE"));
 }
@@ -1536,6 +1582,7 @@ void setup() {
     initSerial();
     initCrashMonitor();
     initOutputs();
+    initDepthSensor();
     initFilesystem();
     initWiFi();
     initMDNS();

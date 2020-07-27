@@ -12,7 +12,7 @@
 #define ENABLE_OTA                              // Comment this line to disable OTA updates.
 #define ENABLE_MDNS                             // Comment this line to disable the MDNS.
 //#define ENABLE_TLS                              // Comment this line to disable TLS (MQTT-over-SSL) support.
-#define PIT_DEPTH_INCHES 30                     // The depth of the sump pit (inches).
+#define PIT_DEPTH_INCHES 32                     // The depth of the sump pit (inches).
 #define ALARM_DEPTH_INCHES 5                    // The depth at which to consider an alarm state (inches left until full)
 #define CONFIG_FILE_PATH "/config.json"         // The config file path. Do not alter unless you are sure.
 #define DEFAULT_SSID "your_ssid_here"           // Put the SSID of your WiFi here.
@@ -28,6 +28,8 @@
 #define MQTT_TOPIC_CONTROL "cysump/control"     // MQTT control channel to subscribe to.
 #define MQTT_BROKER "your_mqtt_broker_here"     // MQTT broker hostname or IP.
 #define MQTT_PORT 8883                          // MQTT port number.
+#define DEFAULT_PUMP_ACTIVATE_PERCENT 70        // Default percentage of the sump pit is full before activating the pump.
+#define DEFAULT_PUMP_DEACTIVATE_PERCENT 15      // Default percentage of the sump pit is full before deactivating the pump if active.
 #ifdef ENABLE_OTA
     #include <ArduinoOTA.h>
     #define OTA_HOST_PORT 8266                     // The OTA updater port.
