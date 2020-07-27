@@ -17,5 +17,7 @@
     "mqttPassword": "your_mqtt_password",
     "serverFingerprintPath": "/mqtt.fpn",
     "caCertificatePath": "/ca.crt",
-    "pitDepth": 30
+    "pitDepth": 30,
+    "activatePercentFull": 65,
+    "deactivatePercent": 15
 }

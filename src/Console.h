@@ -207,6 +207,18 @@ public:
     void onAlarmEnabled(void (*alarmEnabledHnadler)());
 
     /**
+     * Sets the callback method to execute when getting the minimum level
+     * during sensor calibration.
+     */
+    void onMinSensorReading(void (*minSensorReadingHandler)());
+
+    /**
+     * Sets the callback method to execute when getting the maximum level
+     * during sensor calibration.
+     */
+    void onMaxSensorReading(void (*maxSensorReadingHandler)());
+
+    /**
      * Checks to see if the interrupt key ('i') has been pressed and fires
      * the interrupt handler if it has. This should be called from loop().
      */
@@ -219,6 +231,7 @@ private:
     void configureWiFiNetwork();
     void configMQTT();
     void configPitDepth();
+    void calibrateSensor();
 
     void (*rebootHandler)();
     void (*scanHandler)();
@@ -239,6 +252,8 @@ private:
     void (*runDiagsHandler)();
     void (*alarmDisabledHandler)();
     void (*alarmEnabledHandler)();
+    void (*minSensorReadingHandler)();
+    void (*maxSensorReadingHandler)();
     String _hostName;
     String _mqttBroker;
     int _mqttPort;

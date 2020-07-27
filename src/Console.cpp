@@ -83,6 +83,14 @@ void ConsoleClass::onAlarmEnabled(void (*alarmEnabledHandler)()) {
     this->alarmEnabledHandler = alarmEnabledHandler;
 }
 
+void ConsoleClass::onMinSensorReading(void (*minSensorReadingHandler)()) {
+    this->minSensorReadingHandler = minSensorReadingHandler;
+}
+
+void ConsoleClass::onMaxSensorReading(void (*maxSensorReadingHandler)()) {
+    this->maxSensorReadingHandler = maxSensorReadingHandler;
+}
+
 void ConsoleClass::setMqttConfig(String broker, int port, String username, String password, String conChan, String statChan) {
     this->_mqttBroker = broker;
     this->_mqttPort = port;
@@ -281,6 +289,7 @@ void ConsoleClass::displayMenu() {
     Serial.println(F("= l: Configure pit depth     ="));
     Serial.println(F("= c: Configure network       ="));
     Serial.println(F("= m: Configure MQTT settings ="));
+    Serial.println(F("= b: Calibrate sensor        ="));
     Serial.println(F("= s: Scan wireless networks  ="));
     Serial.println(F("= n: Connect to new network  ="));
     Serial.println(F("= w: Reconnect to WiFi       ="));
@@ -295,7 +304,7 @@ void ConsoleClass::displayMenu() {
     Serial.println(F("=                            ="));
     Serial.println(F("=============================="));
     Serial.println();
-    Serial.println(F("Enter command choice (r/c/m/s/n/w/e/g/a/f/z): "));
+    Serial.println(F("Enter command choice (a/r/l/c/m/b/s/n/w/e/g/o/x/q/u/f/z): "));
     this->waitForUserInput();
 }
 
@@ -304,12 +313,27 @@ void ConsoleClass::enterCommandInterpreter() {
     this->checkCommand();
 }
 
+void ConsoleClass::calibrateSensor() {
+    Serial.println(F("\n\n*** SENSOR CALIBRATION ***"));
+    Serial.println("\nMake sure there is no fluid in the container and press any key...");
+    this->waitForUserInput();
+    if (this->minSensorReadingHandler != NULL) {
+        this->minSensorReadingHandler();
+    }
+
+    Serial.println(F("Fill container with fluid until full. Then press any key..."));
+    this->waitForUserInput();
+    if (this->maxSensorReadingHandler != NULL) {
+        this->maxSensorReadingHandler();
+    }
+}
+
 void ConsoleClass::checkCommand() {
     String str = "";
     char incomingByte = Serial.read();
     switch (incomingByte) {
         case 'a':
-            if (this->activatePumpHandler!= NULL) {
+            if (this->activatePumpHandler != NULL) {
                 this->activatePumpHandler();
             }
 
@@ -388,6 +412,10 @@ void ConsoleClass::checkCommand() {
             break;
         case 'm':
             this->configMQTT();
+            this->enterCommandInterpreter();
+            break;
+        case 'b':
+            this->calibrateSensor();
             this->enterCommandInterpreter();
             break;
         case 'z':
