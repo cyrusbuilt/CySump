@@ -1,6 +1,6 @@
 /**
  * CySump
- * v1.4
+ * v1.5
  * 
  * Author:
  *  Cyrus Brunner <cyrusbuilt at gmail dot com>
@@ -41,7 +41,7 @@
 #include "config.h"
 #include "Console.h"
 
-#define FIRMWARE_VERSION "1.4"
+#define FIRMWARE_VERSION "1.5"
 
 // Pin definitions
 #define PIN_WIFI_LED 2
@@ -72,7 +72,7 @@ void onSyncClock();
 #endif
 PubSubClient mqttClient(wifiClient);
 WaterLevelSensor sensor(PIN_LEVEL_SENSOR);
-Relay pumpRelay(PIN_RELAY, onRelayStateChange, "GARAGE_DOOR");
+Relay pumpRelay(PIN_RELAY, onRelayStateChange, "SUMP_PUMP");
 LED alarmLED(PIN_ALARM_LED, NULL);
 LED wifiLED(PIN_WIFI_LED, NULL);
 LED pumpLED(PIN_PUMP_LED, NULL);
@@ -97,8 +97,8 @@ int mqttPort = MQTT_PORT;
 int activatePercent = DEFAULT_PUMP_ACTIVATE_PERCENT;
 int deactivatePercent = DEFAULT_PUMP_DEACTIVATE_PERCENT;
 float pitDepth = PIT_DEPTH_INCHES;
+float lastDepth = 0;
 volatile int percentFull = 0;
-volatile unsigned long lastDepth = 0;
 bool isDHCP = false;
 bool filesystemMounted = false;
 bool manualPumpMode = false;
@@ -1249,24 +1249,17 @@ void onCheckWiFi() {
  */
 void onCheckSensors() {
     Serial.println(F("INFO: Checking sensor..."));
-
-    // TODO Probably need some kind of calibration routine. The distance
-    // measured is the distance from wherever the sensor is in space
-    // and the bottom of the pit. If the sensor is mounted far enough
-    // above the top of the pit, this could skew things. Likewise, if
-    // the sensor is positioned slightly inside the top of the pit, we
-    // need to account for that.
-    float depthAverage = sensor.getLevelInches();
-    if (depthAverage < 0) {
-        depthAverage = 0;
+    float depthReading = sensor.getLevelInches();
+    if (depthReading < 0) {
+        depthReading = 0;
     }
 
-    if (depthAverage > pitDepth) {
-        depthAverage = pitDepth;
+    if (depthReading > pitDepth) {
+        depthReading = pitDepth;
     }
 
     Serial.print(F("DEBUG: Depth acutal = "));
-    Serial.println(depthAverage);
+    Serial.println(depthReading);
     Serial.print(F("DEBUG: Pit depth = "));
     Serial.println(pitDepth);
 
@@ -1278,20 +1271,20 @@ void onCheckSensors() {
     // water depth, so we subtract the current reading from the known
     // pit depth (+/- a potential offset for sensor position).
 
-    if (depthAverage == 0) {
+    if (depthReading == 0) {
         percentFull = 100;
     }
     else {
-        percentFull = 100 - ((depthAverage * 100) / pitDepth);
+        percentFull = sensor.getPercentFull();
     }
 
     if (percentFull < 0) {
         percentFull = 0;
     }
 
-    lastDepth = depthAverage;
+    lastDepth = depthReading;
     Serial.print(F("INFO: Water level change event. Depth: "));
-    Serial.print(depthAverage);
+    Serial.print(depthReading);
     Serial.print(F(" inches ("));
     Serial.print(percentFull);
     Serial.println(F("%)"));
@@ -1305,7 +1298,7 @@ void onCheckSensors() {
         }
     }
 
-    if (depthAverage <= ALARM_DEPTH_INCHES) {
+    if (depthReading <= ALARM_DEPTH_INCHES) {
        if (alarmLED.isOff()) {
            alarmLED.on();
            if (!alarmDisabled) {
@@ -1364,7 +1357,6 @@ void handleActivatePump() {
  */
 void handleFactoryRestore() {
     doFactoryRestore();
-    reboot();
 }
 
 /**
