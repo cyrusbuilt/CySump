@@ -20,6 +20,7 @@
 #endif
 #include <Arduino.h>
 #include <ESP8266WiFi.h>
+#include "config.h"
 #ifdef ENABLE_TLS
     #include <WiFiClientSecure.h>
 #else
@@ -38,7 +39,6 @@
 #include "PubSubClient.h"
 #include "TelemetryHelper.h"
 #include "WaterLevelSensor.h"
-#include "config.h"
 #include "Console.h"
 
 #define FIRMWARE_VERSION "1.5"
