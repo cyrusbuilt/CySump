@@ -20,7 +20,7 @@ certs/
 /.DS_Store
 
 # Gerber package
-gerber.zip
+*.zip
 
 # Salesforce extension crap. No idea why the hell it
 # creates this in literally every single folder I open

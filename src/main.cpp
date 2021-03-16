@@ -1,6 +1,6 @@
 /**
  * CySump
- * v1.5
+ * v1.6
  * 
  * Author:
  *  Cyrus Brunner <cyrusbuilt at gmail dot com>
@@ -12,7 +12,6 @@
  * dependency changes.
  */
 
-// TODO Switch from using SPIFFS to LittleFS.
 // TODO Implement FS checks in self-diags
 
 #ifndef ESP8266
@@ -21,11 +20,7 @@
 #include <Arduino.h>
 #include <ESP8266WiFi.h>
 #include "config.h"
-#ifdef ENABLE_TLS
-    #include <WiFiClientSecure.h>
-#else
-    #include <WiFiClient.h>
-#endif
+#include <WiFiClient.h>
 #include <FS.h>
 #include <time.h>
 #include "Buzzer.h"
@@ -41,7 +36,7 @@
 #include "WaterLevelSensor.h"
 #include "Console.h"
 
-#define FIRMWARE_VERSION "1.5"
+#define FIRMWARE_VERSION "1.6"
 
 // Pin definitions
 #define PIN_WIFI_LED 2
@@ -65,11 +60,7 @@ void onSyncClock();
     #include <ESP8266mDNS.h>
     MDNSResponder mdns;
 #endif
-#ifdef ENABLE_TLS
-    WiFiClientSecure wifiClient;
-#else
-    WiFiClient wifiClient;
-#endif
+WiFiClient wifiClient;
 PubSubClient mqttClient(wifiClient);
 WaterLevelSensor sensor(PIN_LEVEL_SENSOR);
 Relay pumpRelay(PIN_RELAY, onRelayStateChange, "SUMP_PUMP");
@@ -82,35 +73,13 @@ Task tCheckMqtt(CHECK_MQTT_INTERVAL, TASK_FOREVER, &onCheckMqtt);
 Task tSyncClock(CLOCK_SYNC_INTERVAL, TASK_FOREVER, &onSyncClock);
 Task tCheckSensors(CHECK_SENSORS_INTERVAL, TASK_FOREVER, &onCheckSensors);
 Scheduler taskMan;
-String hostName = DEVICE_NAME;
-String ssid = DEFAULT_SSID;
-String password = DEFAULT_PASSWORD;
-String mqttBroker = MQTT_BROKER;
-String controlChannel = MQTT_TOPIC_CONTROL;
-String statusChannel = MQTT_TOPIC_STATUS;
-String serverFingerprintPath;
-String caCertificatePath;
-String fingerprintString;
-String mqttUsername = "";
-String mqttPassword = "";
-int mqttPort = MQTT_PORT;
-int activatePercent = DEFAULT_PUMP_ACTIVATE_PERCENT;
-int deactivatePercent = DEFAULT_PUMP_DEACTIVATE_PERCENT;
-float pitDepth = PIT_DEPTH_INCHES;
+config_t config;
 float lastDepth = 0;
 volatile int percentFull = 0;
-bool isDHCP = false;
 bool filesystemMounted = false;
 bool manualPumpMode = false;
-#ifdef ENABLE_TLS
-    bool connSecured = false;
-#endif
 volatile SystemState sysState = SystemState::BOOTING;
 bool alarmDisabled = false;
-#ifdef ENABLE_OTA
-    int otaPort = OTA_HOST_PORT;
-    String otaPassword = OTA_PASSWORD;
-#endif
 
 // TODO Maybe add some logic to measure how fast the water level is rising.
 // If rising too fast, especially while the pump is running, this could be
@@ -176,8 +145,10 @@ void publishSystemState() {
     if (mqttClient.connected()) {
         wifiLED.on();
 
-        DynamicJsonDocument doc(MQTT_MAX_PACKET_SIZE);
-        doc["client_id"] = hostName;
+        uint16_t freeMem = ESP.getMaxFreeBlockSize() - 512;
+
+        DynamicJsonDocument doc(freeMem);
+        doc["client_id"] = config.hostname;
         doc["pumpState"] = pumpStatus();
         doc["firmwareVersion"] = FIRMWARE_VERSION;
         doc["systemState"] = (uint8_t)sysState;
@@ -185,12 +156,13 @@ void publishSystemState() {
         doc["pitState"] = pitState(percentFull);
         doc["waterDepth"] = lastDepth;
         doc["alarmEnabled"] = alarmDisabled ? "OFF" : "ON";
+        doc.shrinkToFit();
 
         String jsonStr;
         size_t len = serializeJson(doc, jsonStr);
         Serial.print(F("INFO: Publishing system state: "));
         Serial.println(jsonStr);
-        if (!mqttClient.publish(statusChannel.c_str(), jsonStr.c_str(), len)) {
+        if (!mqttClient.publish(config.mqttTopicStatus.c_str(), jsonStr.c_str(), len)) {
             Serial.println(F("ERROR: Failed to publish message."));
         }
 
@@ -328,30 +300,27 @@ void saveConfiguration() {
     }
 
     StaticJsonDocument<350> doc;
-    doc["hostname"] = hostName;
-    doc["useDHCP"] = isDHCP;
-    doc["ip"] = ip.toString();
-    doc["gateway"] = gw.toString();
-    doc["subnetMask"] = sm.toString();
-    doc["dnsServer"] = dns.toString();
-    doc["wifiSSID"] = ssid;
-    doc["wifiPassword"] = password;
-    doc["mqttBroker"] = mqttBroker;
-    doc["mqttPort"] = mqttPort;
-    doc["mqttControlChannel"] = controlChannel;
-    doc["mqttStatusChannel"] = statusChannel;
-    doc["mqttUsername"] = mqttUsername;
-    doc["mqttPassword"] = mqttPassword;
-    doc["activatePercentFull"] = activatePercent;
-    doc["deactivatePercent"] = deactivatePercent;
-    #ifdef ENABLE_TLS
-        doc["serverFingerPrintPath"] = serverFingerprintPath;
-        doc["caCertificatePath"] = caCertificatePath;
-    #endif
-    doc["pitDepth"] = pitDepth;
+    doc["hostname"] = config.hostname;
+    doc["useDHCP"] = config.useDhcp;
+    doc["ip"] = config.ip.toString();
+    doc["gateway"] = config.gw.toString();
+    doc["subnetMask"] = config.sm.toString();
+    doc["dnsServer"] = config.dns.toString();
+    doc["wifiSSID"] = config.ssid;
+    doc["wifiPassword"] = config.password;
+    doc["mqttBroker"] = config.mqttBroker;
+    doc["mqttPort"] = config.mqttPort;
+    doc["mqttControlChannel"] = config.mqttTopicControl;
+    doc["mqttStatusChannel"] = config.mqttTopicStatus;
+    doc["mqttUsername"] = config.mqttUsername;
+    doc["mqttPassword"] = config.mqttPassword;
+    doc["activatePercentFull"] = config.pumpActivatePercent;
+    doc["deactivatePercent"] = config.pumpDeactivatePercent;
+    doc["pitDepth"] = config.pitDepth;
+    doc["alarmDepthInches"] = config.alarmDepthInches;
     #ifdef ENABLE_OTA
-        doc["otaPort"] = otaPort;
-        doc["otaPassword"] = otaPassword;
+        doc["otaPort"] = config.otaPort;
+        doc["otaPassword"] = config.otaPassword;
     #endif
 
     File configFile = SPIFFS.open(CONFIG_FILE_PATH, "w");
@@ -369,6 +338,41 @@ void saveConfiguration() {
     Serial.println(F("DONE"));
 }
 
+void setConfigurationDefaults() {
+    String chipId = String(ESP.getChipId(), HEX);
+    String defHostname = String(DEVICE_NAME) + "_" + chipId;
+
+    config.hostname = defHostname;
+    config.ip = defaultIp;
+    config.mqttBroker = MQTT_BROKER;
+    config.mqttPassword = "";
+    config.mqttPort = MQTT_PORT;
+    config.mqttTopicControl = MQTT_TOPIC_CONTROL;
+    config.mqttTopicStatus = MQTT_TOPIC_STATUS;
+    config.mqttUsername = "";
+    config.password = DEFAULT_PASSWORD;
+    config.sm = defaultSm;
+    config.ssid = DEFAULT_SSID;
+    config.useDhcp = false;
+    config.clockTimezone = CLOCK_TIMEZONE;
+    config.dns = defaultDns;
+    config.gw = defaultGw;
+    config.pitDepth = PIT_DEPTH_INCHES;
+    config.pumpActivatePercent = DEFAULT_PUMP_ACTIVATE_PERCENT;
+    config.pumpDeactivatePercent = DEFAULT_PUMP_DEACTIVATE_PERCENT;
+    config.alarmDepthInches = ALARM_DEPTH_INCHES;
+    #ifdef ENABLE_OTA
+        config.otaPassword = OTA_PASSWORD;
+        config.otaPort = OTA_HOST_PORT;
+    #endif
+}
+
+void printWarningAndContinue(const __FlashStringHelper *message) {
+    Serial.println();
+    Serial.println(message);
+    Serial.print(F("INFO: Continuing... "));
+}
+
 /**
  * Loads the configuration from CONFIG_FILE_PATH into memory and uses that as
  * the running configuration. Will report errors to the serial console and
@@ -381,6 +385,8 @@ void saveConfiguration() {
  * 5) The config file could not be deserialized to a JSON structure.
  */
 void loadConfiguration() {
+    memset(&config, 0, sizeof(config));
+
     Serial.print(F("INFO: Loading config file: "));
     Serial.print(CONFIG_FILE_PATH);
     Serial.print(F(" ... "));
@@ -405,175 +411,93 @@ void loadConfiguration() {
     }
 
     size_t size = configFile.size();
-    if (size > 1024) {
+    uint16_t freeMem = ESP.getMaxFreeBlockSize() - 512;
+    if (size > freeMem) {
         Serial.println(F("FAIL"));
-        Serial.println(F("ERROR: Config file size is too large. Using default config."));
+        Serial.print(F("ERROR: Not enough free memory to load document. Size = "));
+        Serial.print(size);
+        Serial.print(F(", Free = "));
+        Serial.println(freeMem);
         configFile.close();
         return;
     }
 
-    std::unique_ptr<char[]> buf(new char[size]);
-    configFile.readBytes(buf.get(), size);
-    configFile.close();
-
-    StaticJsonDocument<350> doc;
-    DeserializationError error = deserializeJson(doc, buf.get());
+    DynamicJsonDocument doc(freeMem);
+    DeserializationError error = deserializeJson(doc, configFile);
     if (error) {
         Serial.println(F("FAIL"));
         Serial.println(F("ERROR: Failed to parse config file to JSON. Using default config."));
+        configFile.close();
         return;
     }
 
-    hostName = doc["hostname"].as<String>();
-    isDHCP = doc["useDHCP"].as<bool>();
-    if (!ip.fromString(doc["ip"].as<String>())) {
-        Serial.println(F("WARN: Invalid IP in configuration. Falling back to factory default."));
+    doc.shrinkToFit();
+    configFile.close();
+
+    String chipId = String(ESP.getChipId(), HEX);
+    String defHostname = String(DEVICE_NAME) + "_" + chipId;
+
+    config.hostname = doc.containsKey("hostname") ? doc["hostname"].as<String>() : defHostname;
+    config.useDhcp = doc.containsKey("isDhcp") ? doc["isDhcp"].as<bool>() : false;
+
+    if (doc.containsKey("ip")) {
+        if (!config.ip.fromString(doc["ip"].as<String>())) {
+            printWarningAndContinue(F("WARN: Invalid IP in configuration. Falling back to factory default."));
+        }
     }
-    
-    if (!gw.fromString(doc["gateway"].as<String>())) {
-        Serial.println(F("WARN: Invalid gateway in configuration. Falling back to factory default."));
-    }
-    
-    if (!sm.fromString(doc["subnetMask"].as<String>())) {
-        Serial.println(F("WARN: Invalid subnet mask in configuration. Falling back to default."));
+    else {
+        config.ip = defaultIp;
     }
 
-    if (!dns.fromString(doc["dnsServer"].as<String>())) {
-        Serial.println(F("WARN: Invalid DSN server in configuration. Falling back to default."));
+    if (doc.containsKey("gateway")) {
+        if (!config.gw.fromString(doc["gateway"].as<String>())) {
+            printWarningAndContinue(F("WARN: Invalid gateway in configuration. Falling back to factory default."));
+        }
     }
-    
-    ssid = doc["wifiSSID"].as<String>();
-    password = doc["wifiPassword"].as<String>();
-    mqttBroker = doc["mqttBroker"].as<String>();
-    mqttPort = doc["mqttPort"].as<int>();
-    controlChannel = doc["mqttControlChannel"].as<String>();
-    statusChannel = doc["mqttStatusChannel"].as<String>();
-    mqttUsername = doc["mqttUsername"].as<String>();
-    mqttPassword = doc["mqttPassword"].as<String>();
-    activatePercent = doc["activatePercentFull"].as<int>();
-    deactivatePercent = doc["deactivatePercent"].as<int>();
-    #ifdef ENABLE_TLS
-        serverFingerprintPath = doc["serverFingerprintPath"].as<String>();
-        caCertificatePath = doc["caCertificatePath"].as<String>();
-    #endif
-    pitDepth = doc["pitDepth"].as<int>();
+    else {
+        config.gw = defaultGw;
+    }
+
+    if (doc.containsKey("subnetmask")) {
+        if (!config.sm.fromString(doc["subnetmask"].as<String>())) {
+            printWarningAndContinue(F("WARN: Invalid subnet mask in configuration. Falling back to factory default."));
+        }
+    }
+    else {
+        config.sm = defaultSm;
+    }
+
+    if (doc.containsKey("dns")) {
+        if (!config.dns.fromString(doc["dns"].as<String>())) {
+            printWarningAndContinue(F("WARN: Invalid DNS IP in configuration. Falling back to factory default."));
+        }
+    }
+    else {
+        config.dns = defaultDns;
+    }
+
+    config.ssid = doc.containsKey("wifiSSID") ? doc["wifiSSID"].as<String>() : DEFAULT_SSID;
+    config.password = doc.containsKey("wifiPassword") ? doc["wifiPassword"].as<String>() : DEFAULT_PASSWORD;
+    config.mqttBroker = doc.containsKey("mqttBroker") ? doc["mqttBroker"].as<String>() : MQTT_BROKER;
+    config.mqttPort = doc.containsKey("mqttPort") ? doc["mqttPort"].as<int>() : MQTT_PORT;
+    config.mqttTopicControl = doc.containsKey("mqttControlChannel") ? doc["mqttControlChannel"].as<String>() : MQTT_TOPIC_CONTROL;
+    config.mqttTopicStatus = doc.containsKey("mqttStatusChannel") ? doc["mqttStatusChannel"].as<String>() : MQTT_TOPIC_STATUS;
+    config.mqttUsername = doc.containsKey("mqttUsername") ? doc["mqttUsername"].as<String>() : "";
+    config.mqttPassword = doc.containsKey("mqttPassword") ? doc["mqttPassword"].as<String>() : "";
+
     #ifdef ENABLE_OTA
-        otaPort = doc["otaPort"].as<int>();
-        otaPassword = doc["otaPassword"].as<String>();
+        config.otaPort = doc.containsKey("otaPort") ? doc["otaPort"].as<uint16_t>() : MQTT_PORT;
+        config.otaPassword = doc.containsKey("otaPassword") ? doc["otaPassword"].as<String>() : OTA_PASSWORD;
     #endif
+
+    config.alarmDepthInches = doc.containsKey("alarmDepthInches") ? doc["alarmDepthInches"].as<uint8_t>() : ALARM_DEPTH_INCHES;
+    config.pitDepth = doc.containsKey("pitDepth") ? doc["pitDepth"].as<uint8_t>() : PIT_DEPTH_INCHES;
+    config.pumpActivatePercent = doc.containsKey("activatePercentFull") ? doc["activatePercentFull"].as<uint8_t>() : DEFAULT_PUMP_ACTIVATE_PERCENT;
+    config.pumpDeactivatePercent = doc.containsKey("deactivatePercentFull") ? doc["deactivatePercentFull"].as<uint8_t>() : DEFAULT_PUMP_DEACTIVATE_PERCENT; 
 
     doc.clear();
     Serial.println(F("DONE"));
 }
-
-#ifdef ENABLE_TLS
-/**
- * Loads the SSL certificates and server fingerprint necessary to establish
- * a connection the the MQTT broker over TLS.
- * @return true if the certificates and server fingerprint were successfully
- * loaded; Otherwise, false.
- */
-bool loadCertificates() {
-    Serial.print(F("INFO: Loading SSL certificates... "));
-    if (!filesystemMounted) {
-        Serial.println(F("FAIL"));
-        Serial.println(F("ERROR: Filesystem not mounted."));
-        return false;
-    }
-
-    if (!SPIFFS.exists(caCertificatePath)) {
-        Serial.println(F("FAIL"));
-        Serial.println(F("ERROR: CA certificate does not exist."));
-        return false;
-    }
-
-    File ca = SPIFFS.open(caCertificatePath, "r");
-    if (!ca) {
-        Serial.println(F("FAIL"));
-        Serial.println(F("ERROR: Could not open CA certificate."));
-        return false;
-    }
-
-    String caContents = ca.readString();
-    ca.close();
-    X509List caCertX509(caContents.c_str());
-
-    wifiClient.allowSelfSignedCerts();
-    wifiClient.setTrustAnchors(&caCertX509);
-
-    if (!SPIFFS.exists(serverFingerprintPath)) {
-        Serial.println(F("FAIL"));
-        Serial.println(F("ERROR: Server fingerprint file path does not exist."));
-        return false;
-    }
-
-    File fp = SPIFFS.open(serverFingerprintPath, "r");
-    if (!fp) {
-        Serial.println(F("FAIL"));
-        Serial.println(F("ERROR: Could not open fingerprint file."));
-        return false;
-    }
-
-    String val;
-    if (fp.available()) {
-        String fileContent = fp.readString();
-        val = fileContent.substring(fileContent.lastIndexOf("=") + 1);
-        val.replace(':', ' ');
-    }
-
-    fp.close();
-    if (val.length() > 0) {
-        fingerprintString = val;
-        fingerprintString.trim();
-        if (!wifiClient.setFingerprint(fingerprintString.c_str())) {
-            Serial.println(F("FAIL"));
-            Serial.println(F("ERROR: Invalid fingerprint."));
-            return false;
-        }
-    }
-    else {
-        Serial.println(F("FAIL"));
-        Serial.println(F("ERROR: Failed to read server fingerprint."));
-        return false;
-    }
-    
-    Serial.println(F("DONE"));
-    return true;
-}
-
-/**
- * Verifies a connection can be made to the MQTT broker over TLS.
- * @return true if a connection to the MQTT broker over TLS was established
- * successfully; Otherwise, false.
- */
-bool verifyTLS() {
-    // Because it can take longer than expected to establish an
-    // encrypted connection the MQTT broker, we need to disable
-    // the watchdog to prevent reboot due to watchdog timeout during
-    // connection, then re-enable when we are done.
-    ESPCrashMonitor.disableWatchdog();
-
-    // Currently, we sync the clock any time we need to verify TLS. This is
-    // because in a future version, this will be required in order to validate
-    // public CA certificates.
-    onSyncClock();
-
-    Serial.print(F("INFO: Verifying connectivity over TLS... "));
-    //wifiClient.setX509Time(time(nullptr));
-    bool result = wifiClient.connect(mqttBroker, mqttPort);
-    if (result) {
-        wifiClient.stop();
-        Serial.println(F("DONE"));
-    }
-    else {
-        Serial.println(F("FAIL"));
-        Serial.println(F("ERROR: TLS connection failed."));
-    }
-
-    ESPCrashMonitor.enableWatchdog(ESPCrashMonitorClass::ETimeout::Timeout_2s);
-    return result;
-}
-#endif
 
 /**
  * Confirms with the user that they wish to do a factory restore. If so, then
@@ -633,36 +557,26 @@ void doFactoryRestore(bool fromSubmit = false) {
 bool reconnectMqttClient() {
     if (!mqttClient.connected()) {
         Serial.print(F("INFO: Attempting to establish MQTT connection to "));
-        Serial.print(mqttBroker);
+        Serial.print(config.mqttBroker);
         Serial.print(F(" on port: "));
-        Serial.print(mqttPort);
+        Serial.print(config.mqttPort);
         Serial.println(F("..."));
-        #ifdef ENABLE_TLS
-            if (!connSecured) {
-                connSecured = verifyTLS();
-                if (!connSecured) {
-                    Serial.println(F("ERROR: Unable to establish TLS connection to host."));
-                    Serial.println(F("ERROR: Invalid certificate or SSL negotiation failed."));
-                    return false;
-                }
-            }
-        #endif
 
         bool didConnect = false;
-        if (mqttUsername.length() > 0 && mqttPassword.length() > 0) {
-            didConnect = mqttClient.connect(hostName.c_str(), mqttUsername.c_str(), mqttPassword.c_str());
+        if (config.mqttUsername.length() > 0 && config.mqttPassword.length() > 0) {
+            didConnect = mqttClient.connect(config.hostname.c_str(), config.mqttUsername.c_str(), config.mqttPassword.c_str());
         }
         else {
-            didConnect = mqttClient.connect(hostName.c_str());
+            didConnect = mqttClient.connect(config.hostname.c_str());
         }
 
         if (didConnect) {
             Serial.print(F("INFO: Subscribing to channel: "));
-            Serial.println(controlChannel);
-            mqttClient.subscribe(controlChannel.c_str());
+            Serial.println(config.mqttTopicControl);
+            mqttClient.subscribe(config.mqttTopicControl.c_str());
 
             Serial.print(F("INFO: Publishing to channel: "));
-            Serial.println(statusChannel);
+            Serial.println(config.mqttTopicStatus);
         }
         else {
             String failReason = TelemetryHelper::getMqttStateDesc(mqttClient.state());
@@ -702,7 +616,7 @@ void onCheckMqtt() {
  */
 void handleControlRequest(String id, ControlCommand cmd) {
     id.toUpperCase();
-    if (!id.equals(hostName)) {
+    if (!id.equals(config.hostname)) {
         Serial.println(F("INFO: Control message not intended for this host. Ignoring..."));
         return;
     }
@@ -778,7 +692,9 @@ void onMqttMessage(char* topic, byte* payload, unsigned int length) {
 
     Serial.println(msg);
 
-    StaticJsonDocument<100> doc;
+    uint16_t freeMem = ESP.getMaxFreeBlockSize() - 512;
+    DynamicJsonDocument doc(freeMem);
+
     DeserializationError error = deserializeJson(doc, msg);
     if (error) {
         Serial.print(F("ERROR: Failed to parse MQTT message to JSON: "));
@@ -787,6 +703,7 @@ void onMqttMessage(char* topic, byte* payload, unsigned int length) {
         return;
     }
 
+    doc.shrinkToFit();
     String id = doc["client_id"].as<String>();
     ControlCommand cmd = (ControlCommand)doc["command"].as<uint8_t>();
     doc.clear();
@@ -802,13 +719,13 @@ void initMDNS() {
         if (WiFi.status() == WL_CONNECTED) {
             ESPCrashMonitor.defer();
             delay(500);
-            if (!mdns.begin(hostName)) {
+            if (!mdns.begin(config.hostname)) {
                 Serial.println(F(" FAILED"));
                 return;
             }
 
             #ifdef ENABLE_OTA
-                mdns.addService(hostName, "ota", otaPort);
+                mdns.addService(config.hostname, "ota", config.otaPort);
             #endif
             Serial.println(F(" DONE"));
         }
@@ -831,6 +748,7 @@ void initFilesystem() {
 
     filesystemMounted = true;
     Serial.println(F("DONE"));
+    setConfigurationDefaults();
     loadConfiguration();
 }
 
@@ -839,7 +757,7 @@ void initFilesystem() {
  */
 void initMQTT() {
     Serial.print(F("INIT: Initializing MQTT client... "));
-    mqttClient.setServer(mqttBroker.c_str(), mqttPort);
+    mqttClient.setServer(config.mqttBroker.c_str(), config.mqttPort);
     mqttClient.setCallback(onMqttMessage);
     Serial.println(F("DONE"));
     if (reconnectMqttClient()) {
@@ -860,15 +778,15 @@ void connectWifi() {
     ESPCrashMonitor.defer();
 
     delay(1000);
-    if (isDHCP) {
+    if (config.useDhcp) {
         WiFi.config(0U, 0U, 0U, 0U);
     }
     else {
-        WiFi.config(ip, gw, sm, gw);
+        WiFi.config(config.ip, config.gw, config.sm, config.dns);
     }
 
     Serial.println(F("DEBUG: Beginning connection..."));
-    WiFi.begin(ssid, password);
+    WiFi.begin(config.ssid, config.password);
     Serial.println(F("DEBUG: Waiting for connection..."));
     
     const int maxTries = 20;
@@ -896,7 +814,7 @@ void runDiagnostics() {
     Serial.println(F("INFO: Beginning self-diagnostics..."));
     Serial.print(F("DIAG: Testing network... "));
     if (wifiClient.connected()) {
-        if (Ping.ping(gw)) {
+        if (Ping.ping(config.gw)) {
             Serial.println(F("PASS"));
         }
         else {
@@ -1029,16 +947,6 @@ void runDiagnostics() {
     Serial.println(F("DIAG: Getting WiFi diags... "));
     WiFi.printDiag(Serial);
 
-    #ifdef ENABLE_TLS
-        Serial.println(F("DIAG: Verifying TLS connection... "));
-        if (verifyTLS()) {
-            Serial.println(F("DIAG: TLS verification PASSED"));
-        }
-        else {
-            Serial.println(F("DIAG: TLS verification FAIL"));
-        }
-    #endif
-
     Serial.println(F("INFO: Self-diagnostics complete."));
 }
 
@@ -1091,7 +999,7 @@ void failSafe() {
 void initDepthSensor() {
     Serial.print(F("INIT: Initializing depth sensor... "));
     sensor.begin();
-    sensor.setTapeLengthCm(pitDepth);
+    sensor.setTapeLengthCm(config.pitDepth);
     Serial.println(F("DONE"));
 }
 
@@ -1103,7 +1011,7 @@ void initWiFi() {
     getAvailableNetworks();
     
     Serial.print(F("INFO: Connecting to SSID: "));
-    Serial.print(ssid);
+    Serial.print(config.ssid);
     Serial.println(F("..."));
     
     connectWifi();
@@ -1116,9 +1024,9 @@ void initOTA() {
     #ifdef ENABLE_OTA
         Serial.print(F("INIT: Starting OTA updater... "));
         if (WiFi.status() == WL_CONNECTED) {
-            ArduinoOTA.setPort(otaPort);
-            ArduinoOTA.setHostname(hostName.c_str());
-            ArduinoOTA.setPassword(otaPassword.c_str());
+            ArduinoOTA.setPort(config.otaPort);
+            ArduinoOTA.setHostname(config.hostname.c_str());
+            ArduinoOTA.setPassword(config.otaPassword.c_str());
             ArduinoOTA.onStart([]() {
                 // Handles start of OTA update. Determines update type.
                 String type;
@@ -1254,14 +1162,14 @@ void onCheckSensors() {
         depthReading = 0;
     }
 
-    if (depthReading > pitDepth) {
-        depthReading = pitDepth;
+    if (depthReading > config.pitDepth) {
+        depthReading = config.pitDepth;
     }
 
     Serial.print(F("DEBUG: Depth acutal = "));
     Serial.println(depthReading);
     Serial.print(F("DEBUG: Pit depth = "));
-    Serial.println(pitDepth);
+    Serial.println(config.pitDepth);
 
     // To compute how *full* the pit is, we need to take the inverse of
     // the reading. So if it's 30 in deep, then it's 0% full (no water).
@@ -1290,10 +1198,10 @@ void onCheckSensors() {
     Serial.println(F("%)"));
 
     if (!manualPumpMode) {
-        if (pumpRelay.isOpen() && percentFull >= activatePercent) {
+        if (pumpRelay.isOpen() && percentFull >= config.pumpActivatePercent) {
             togglePump(true);
         }
-        else if (pumpRelay.isClosed() && percentFull <= deactivatePercent) {
+        else if (pumpRelay.isClosed() && percentFull <= config.pumpDeactivatePercent) {
             togglePump(false);
         }
     }
@@ -1364,7 +1272,7 @@ void handleFactoryRestore() {
  * new host name in the running configuration and reinitializes MDNS.
  */
 void onNewHostName(const char* newHostName) {
-    hostName = newHostName;
+    config.hostname = newHostName;
     initMDNS();
 }
 
@@ -1373,12 +1281,12 @@ void onNewHostName(const char* newHostName) {
  * mode. This switches from static network config to DHCP (if not already set).
  */
 void onSwitchToDhcp() {
-    if (isDHCP) {
+    if (config.useDhcp) {
         Serial.println(F("INFO: DHCP mode already set. Skipping..."));
         Serial.println();
     }
     else {
-        isDHCP = true;
+        config.useDhcp = true;
         Serial.println(F("INFO: Set DHCP mode."));
         WiFi.config(0U, 0U, 0U, 0U);
     }
@@ -1390,11 +1298,11 @@ void onSwitchToDhcp() {
  * new static address settings.
  */
 void onSwitchToStaticConfig(IPAddress newIp, IPAddress newSm, IPAddress newGw, IPAddress newDns) {
-    ip = newIp;
-    sm = newSm;
-    gw = newGw;
-    dns = newDns;
-    WiFi.config(ip, gw, sm, dns);  // If actual IP set, then disables DHCP and assumes static.
+    config.ip = newIp;
+    config.sm = newSm;
+    config.gw = newGw;
+    config.dns = newDns;
+    WiFi.config(config.ip, config.gw, config.sm, config.dns);  // If actual IP set, then disables DHCP and assumes static.
 }
 
 /**
@@ -1422,8 +1330,8 @@ void onReconnectFromConsole() {
  * network.
  */
 void onWifiConfig(String newSsid, String newPassword) {
-    ssid = newSsid;
-    password = newPassword;
+    config.ssid = newSsid;
+    config.password = newPassword;
     connectWifi();
 }
 
@@ -1453,15 +1361,16 @@ void onSaveConfig() {
  */
 void onMqttConfigCommand(String newBroker, int newPort, String newUsername, String newPass, String newConChan, String newStatChan) {
     if (mqttClient.connected()) {
-        mqttClient.unsubscribe(controlChannel.c_str());
+        mqttClient.unsubscribe(config.mqttTopicControl.c_str());
         mqttClient.disconnect();
     }
-    mqttBroker = newBroker;
-    mqttPort = newPort;
-    mqttUsername = newUsername;
-    mqttPassword = newPass;
-    controlChannel = newConChan;
-    statusChannel = newStatChan;
+
+    config.mqttBroker = newBroker;
+    config.mqttPort = newPort;
+    config.mqttUsername = newUsername;
+    config.mqttPassword = newPass;
+    config.mqttTopicControl = newConChan;
+    config.mqttTopicStatus = newStatChan;
     initMQTT();
     Serial.println();
 }
@@ -1481,11 +1390,11 @@ void reportPitDepthHandler() {
  * depth' command. This sets the new pit depth in the running configuration.
  */
 void configPitDepthHandler(int newDepth) {
-    pitDepth = newDepth;
+    config.pitDepth = newDepth;
     Serial.print(F("INFO: New depth = "));
-    Serial.println(pitDepth);
+    Serial.println(config.pitDepth);
     Serial.println();
-    sensor.setTapeLengthCm(pitDepth / 2.54);
+    sensor.setTapeLengthCm(config.pitDepth / 2.54);
 }
 
 /**
@@ -1538,8 +1447,15 @@ void handleMaxSensorLevel() {
  */
 void initConsole() {
     Serial.print(F("INIT: Initializing console... "));
-    Console.setHostName(hostName);
-    Console.setMqttConfig(mqttBroker, mqttPort, mqttUsername, mqttPassword, controlChannel, statusChannel);
+    Console.setHostName(config.hostname);
+    Console.setMqttConfig(
+        config.mqttBroker,
+        config.mqttPort,
+        config.mqttUsername,
+        config.mqttPassword,
+        config.mqttTopicControl,
+        config.mqttTopicStatus
+    );
 
     Console.onActivatePump(handleActivatePump);
     Console.onRebootCommand(reboot);
@@ -1579,16 +1495,7 @@ void setup() {
     initWiFi();
     initMDNS();
     initOTA();
-    
-    #ifdef ENABLE_TLS
-        if (loadCertificates() && verifyTLS()) {
-            connSecured = true;
-            initMQTT();
-        }
-    #else
-        initMQTT();
-    #endif
-    
+    initMQTT();
     initTaskManager();
     initConsole();
     Serial.println(F("INIT: Boot sequence complete."));

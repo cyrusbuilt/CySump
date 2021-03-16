@@ -11,7 +11,6 @@
 // Configuration
 #define ENABLE_OTA                              // Comment this line to disable OTA updates.
 #define ENABLE_MDNS                             // Comment this line to disable the MDNS.
-//#define ENABLE_TLS                              // Comment this line to disable TLS (MQTT-over-SSL) support.
 #define PIT_DEPTH_INCHES 32                     // The depth of the sump pit (inches).
 #define ALARM_DEPTH_INCHES 5                    // The depth at which to consider an alarm state (inches left until full)
 #define CONFIG_FILE_PATH "/config.json"         // The config file path. Do not alter unless you are sure.
@@ -35,9 +34,41 @@
     #define OTA_HOST_PORT 8266                     // The OTA updater port.
     #define OTA_PASSWORD "your_ota_password_here"  // The OTA updater password.
 #endif
-IPAddress ip(192, 168, 0, 202);                 // The default static host IP.
-IPAddress gw(192, 168, 0, 1);                   // The default static gateway IP.
-IPAddress sm(255, 255, 255, 0);                 // The default static subnet mask.
-IPAddress dns(gw);                              // The default static DNS server IP (same as gateway for most residential setups)
+IPAddress defaultIp(192, 168, 0, 202);                 // The default static host IP.
+IPAddress defaultGw(192, 168, 0, 1);                   // The default static gateway IP.
+IPAddress defaultSm(255, 255, 255, 0);                 // The default static subnet mask.
+IPAddress defaultDns(defaultGw);                              // The default static DNS server IP (same as gateway for most residential setups)
+
+typedef struct {
+    // Network stuff
+    String hostname;
+    String ssid;
+    String password;
+    IPAddress ip;
+    IPAddress gw;
+    IPAddress sm;
+    IPAddress dns;
+    bool useDhcp;
+
+    uint8_t clockTimezone;
+
+    // MQTT stuff
+    String mqttTopicStatus;
+    String mqttTopicControl;
+    String mqttBroker;
+    String mqttUsername;
+    String mqttPassword;
+    uint16_t mqttPort;
+
+    // OTA stuff
+    uint16_t otaPort;
+    String otaPassword;
+
+    // Thresholds
+    uint8_t pitDepth;
+    uint8_t pumpActivatePercent;
+    uint8_t pumpDeactivatePercent;
+    uint8_t alarmDepthInches;
+} config_t;
 
 #endif
